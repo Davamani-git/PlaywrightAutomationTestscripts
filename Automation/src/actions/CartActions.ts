@@ -3,7 +3,7 @@ import { Page } from '@playwright/test';
 
 /**
  * CartActions encapsulates business flows for cart item ratings.
- * No assertions are performed here.
+ * No assertions are performed .
  * Actions are reusable and composable.
  * Methods accept input validation and error handling for robustness.
  */
