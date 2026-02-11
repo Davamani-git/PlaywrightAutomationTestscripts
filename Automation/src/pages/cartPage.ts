@@ -2,7 +2,7 @@ import { Page } from '@playwright/test';
 
 /**
 
-Page Object for the Cart page.
+Page Object for the Cart page testing.
 Contains only selectors for cart items, ratings, and review counts.
 No actions or assertions are defined here.
 Extensible for new cart-related UI elements. */ export class CartPage { readonly page: Page;
