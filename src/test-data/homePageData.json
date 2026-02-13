@@ -1,0 +1,21 @@
+{
+  "homePageUrl": "https://eshop.example.com/",
+  "malformedUrl": "https://eshop.example.com/%%%bad_url",
+  "serverErrorUrl": "https://eshop.example.com/server-error",
+  "noProductsUrl": "https://eshop.example.com/?noprod=true",
+  "productsLink": "/products",
+  "errorMessages": {
+    "serverError": "Server is unavailable. Please try again later.",
+    "timeout": "Request timed out. Please check your connection.",
+    "malformedUrl": "Invalid URL. Please check the address.",
+    "missingNavBar": "Navigation bar failed to load.",
+    "brokenProductsLink": "Products page is unavailable.",
+    "generic": "An error occurred."
+  },
+  "screenSizes": {
+    "minWidth": 320,
+    "minHeight": 480,
+    "maxWidth": 1920,
+    "maxHeight": 1080
+  }
+}
