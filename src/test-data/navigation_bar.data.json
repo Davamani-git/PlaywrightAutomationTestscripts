@@ -1,0 +1,7 @@
+{
+  "minimumSupported": { "width": 320, "height": 480 },
+  "maximumSupported": { "width": 1920, "height": 1080 },
+  "navBarSelector": "nav, .navbar",
+  "navBarVisible": true,
+  "navBarErrorMessage": "Navigation bar failed to load"
+}

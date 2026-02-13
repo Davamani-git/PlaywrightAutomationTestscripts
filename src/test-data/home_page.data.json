@@ -1,0 +1,13 @@
+{
+  "validUrl": "https://eshop.example.com/",
+  "malformedUrl": "https://eshop..com/invalid",
+  "serverDownUrl": "https://eshop.example.com/",
+  "slowNetwork": {
+    "download": 500,
+    "upload": 500,
+    "latency": 2000
+  },
+  "timeoutMessage": "Request timed out",
+  "errorMessage": "Unable to load home page",
+  "homeTitle": "Welcome to E-Shop"
+}

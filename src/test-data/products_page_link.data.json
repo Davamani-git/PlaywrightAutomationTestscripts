@@ -1,0 +1,7 @@
+{
+  "productsLinkSelector": "a[href=\"/products\"]",
+  "productsLinkVisible": true,
+  "productsLinkBroken": false,
+  "productsLinkErrorMessage": "Products page link is broken",
+  "noProducts": true
+}
