@@ -1,0 +1,10 @@
+{
+  "cartProduct": "Laptop",
+  "cartProductPrice": 999.99,
+  "cartProductQuantity": 1,
+  "cartSubtotal": 999.99,
+  "cartShipping": "Free",
+  "cartTotal": 999.99,
+  "emptyCartMessage": "Your cart is empty",
+  "emptyCartPrompt": "Add some products to get started!"
+}

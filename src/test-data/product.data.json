@@ -1,0 +1,22 @@
+{
+  "products": [
+    {
+      "name": "Laptop",
+      "description": "High-performance laptop for professionals",
+      "price": 999.99,
+      "stock": 10
+    },
+    {
+      "name": "Smartphone",
+      "description": "Latest model with amazing features",
+      "price": 699.99,
+      "stock": 15
+    },
+    {
+      "name": "Headphones",
+      "description": "Wireless noise-cancelling headphones",
+      "price": 199.99,
+      "stock": 20
+    }
+  ]
+}
