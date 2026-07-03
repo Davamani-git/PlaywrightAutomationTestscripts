@@ -1,1836 +1,1350 @@
-# DavTest1010 - Online Shopping Platform
-## Low-Level Design Document
-
-### Executive Summary
-This Low-Level Design (LLD) document provides detailed technical specifications for implementing the DavTest1010 Online Shopping Platform based on the High-Level Design. It includes component specifications, data flows, sequence diagrams, API contracts, database schemas, and implementation details for each microservice.
+# Low-Level Design Document
+# Online Shopping Platform - DavTest1010
 
 ## Table of Contents
-1. [System Architecture Details](#system-architecture-details)
-2. [Database Schema Design](#database-schema-design)
-3. [API Specifications](#api-specifications)
-4. [Component Implementation Details](#component-implementation-details)
-5. [Sequence Diagrams](#sequence-diagrams)
-6. [Security Implementation](#security-implementation)
-7. [Data Flow Specifications](#data-flow-specifications)
-8. [Error Handling Implementation](#error-handling-implementation)
-9. [Performance Optimization Details](#performance-optimization-details)
-10. [Deployment Architecture](#deployment-architecture)
+1. [Component Specifications](#component-specifications)
+2. [Data Flow Diagrams](#data-flow-diagrams)
+3. [Sequence Diagrams](#sequence-diagrams)
+4. [Implementation Details](#implementation-details)
+5. [Database Schema](#database-schema)
+6. [API Specifications](#api-specifications)
+7. [Security Implementation](#security-implementation)
+8. [Deployment Architecture](#deployment-architecture)
 
-## System Architecture Details
+## Component Specifications
 
-### Microservices Component Breakdown
+### 1. API Gateway Component
 
-#### 1. User Service
 ```typescript
-// User Service Structure
-interface UserService {
-  // Core Components
-  userController: UserController;
-  authController: AuthController;
-  userRepository: UserRepository;
-  authService: AuthService;
-  passwordService: PasswordService;
+interface APIGatewayConfig {
+  rateLimiting: {
+    requestsPerMinute: number;
+    burstCapacity: number;
+    keyStrategy: 'IP' | 'USER' | 'API_KEY';
+  };
+  authentication: {
+    jwtSecret: string;
+    tokenExpiry: number;
+    refreshTokenExpiry: number;
+  };
+  loadBalancing: {
+    algorithm: 'ROUND_ROBIN' | 'LEAST_CONNECTIONS' | 'WEIGHTED';
+    healthCheckInterval: number;
+  };
+}
+
+class APIGateway {
+  private rateLimiter: RateLimiter;
+  private authService: AuthenticationService;
+  private loadBalancer: LoadBalancer;
   
-  // Security Components
-  jwtService: JWTService;
-  mfaService: MFAService;
-  auditService: AuditService;
-}
-
-// User Entity
-interface User {
-  userId: string;
-  email: string;
-  passwordHash: string;
-  firstName: string;
-  lastName: string;
-  role: UserRole;
-  status: UserStatus;
-  mfaEnabled: boolean;
-  lastLogin: Date;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-enum UserRole {
-  CONSUMER = 'consumer',
-  SELLER = 'seller',
-  ADMIN = 'admin'
-}
-
-enum UserStatus {
-  ACTIVE = 'active',
-  INACTIVE = 'inactive',
-  SUSPENDED = 'suspended',
-  PENDING_VERIFICATION = 'pending_verification'
+  constructor(config: APIGatewayConfig) {
+    this.rateLimiter = new RateLimiter(config.rateLimiting);
+    this.authService = new AuthenticationService(config.authentication);
+    this.loadBalancer = new LoadBalancer(config.loadBalancing);
+  }
+  
+  async handleRequest(request: IncomingRequest): Promise<Response> {
+    // Rate limiting check
+    if (!await this.rateLimiter.isAllowed(request)) {
+      return new Response(429, 'Rate limit exceeded');
+    }
+    
+    // Authentication
+    const authResult = await this.authService.validateToken(request.headers.authorization);
+    if (!authResult.valid) {
+      return new Response(401, 'Unauthorized');
+    }
+    
+    // Route to appropriate service
+    const targetService = this.loadBalancer.selectService(request.path);
+    return await this.forwardRequest(request, targetService);
+  }
 }
 ```
 
-#### 2. Product Service
+### 2. User Service Component
+
 ```typescript
-// Product Service Structure
-interface ProductService {
-  productController: ProductController;
-  categoryController: CategoryController;
-  inventoryController: InventoryController;
-  productRepository: ProductRepository;
-  categoryRepository: CategoryRepository;
-  imageService: ImageService;
-  searchIndexService: SearchIndexService;
+interface UserProfile {
+  userId: string;
+  email: string;
+  passwordHash: string;
+  profile: {
+    firstName: string;
+    lastName: string;
+    phone: string;
+    address: Address;
+  };
+  roles: Role[];
+  isActive: boolean;
+  createdAt: Date;
+  lastLogin: Date;
 }
 
-// Product Entity
+class UserService {
+  private userRepository: UserRepository;
+  private passwordService: PasswordService;
+  private jwtService: JWTService;
+  private auditService: AuditService;
+  
+  async registerUser(userData: RegisterUserRequest): Promise<UserRegistrationResponse> {
+    // Input validation
+    const validationResult = await this.validateUserInput(userData);
+    if (!validationResult.valid) {
+      throw new ValidationError(validationResult.errors);
+    }
+    
+    // Check if user exists
+    const existingUser = await this.userRepository.findByEmail(userData.email);
+    if (existingUser) {
+      throw new ConflictError('User already exists');
+    }
+    
+    // Hash password
+    const passwordHash = await this.passwordService.hash(userData.password);
+    
+    // Create user
+    const user: UserProfile = {
+      userId: generateUUID(),
+      email: userData.email,
+      passwordHash,
+      profile: userData.profile,
+      roles: [await this.getDefaultRole()],
+      isActive: true,
+      createdAt: new Date(),
+      lastLogin: null
+    };
+    
+    const savedUser = await this.userRepository.save(user);
+    
+    // Audit log
+    await this.auditService.log({
+      action: 'USER_REGISTRATION',
+      userId: savedUser.userId,
+      timestamp: new Date(),
+      metadata: { email: userData.email }
+    });
+    
+    return {
+      userId: savedUser.userId,
+      message: 'User registered successfully'
+    };
+  }
+  
+  async authenticateUser(credentials: LoginRequest): Promise<AuthenticationResponse> {
+    const user = await this.userRepository.findByEmail(credentials.email);
+    if (!user || !user.isActive) {
+      throw new AuthenticationError('Invalid credentials');
+    }
+    
+    const isPasswordValid = await this.passwordService.verify(
+      credentials.password, 
+      user.passwordHash
+    );
+    
+    if (!isPasswordValid) {
+      await this.auditService.log({
+        action: 'FAILED_LOGIN_ATTEMPT',
+        userId: user.userId,
+        timestamp: new Date(),
+        metadata: { ip: credentials.ipAddress }
+      });
+      throw new AuthenticationError('Invalid credentials');
+    }
+    
+    // Update last login
+    await this.userRepository.updateLastLogin(user.userId, new Date());
+    
+    // Generate JWT tokens
+    const accessToken = await this.jwtService.generateAccessToken(user);
+    const refreshToken = await this.jwtService.generateRefreshToken(user);
+    
+    await this.auditService.log({
+      action: 'SUCCESSFUL_LOGIN',
+      userId: user.userId,
+      timestamp: new Date(),
+      metadata: { ip: credentials.ipAddress }
+    });
+    
+    return {
+      accessToken,
+      refreshToken,
+      user: this.sanitizeUser(user)
+    };
+  }
+}
+```
+
+### 3. Product Service Component
+
+```typescript
 interface Product {
   productId: string;
   name: string;
   description: string;
   price: number;
-  categoryId: string;
-  sellerId: string;
+  sku: string;
   inventory: number;
-  images: ProductImage[];
-  specifications: ProductSpecification[];
-  status: ProductStatus;
+  images: string[];
+  sellerId: string;
+  categoryId: string;
+  isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
 
-interface ProductImage {
-  imageId: string;
-  url: string;
-  altText: string;
-  isPrimary: boolean;
-  order: number;
-}
-
-interface ProductSpecification {
-  key: string;
-  value: string;
-  type: SpecificationType;
-}
-
-enum ProductStatus {
-  ACTIVE = 'active',
-  INACTIVE = 'inactive',
-  OUT_OF_STOCK = 'out_of_stock',
-  DISCONTINUED = 'discontinued'
+class ProductService {
+  private productRepository: ProductRepository;
+  private elasticsearchClient: ElasticsearchClient;
+  private cacheService: CacheService;
+  private inventoryService: InventoryService;
+  
+  async searchProducts(searchRequest: ProductSearchRequest): Promise<ProductSearchResponse> {
+    const cacheKey = this.generateCacheKey(searchRequest);
+    
+    // Check cache first
+    const cachedResult = await this.cacheService.get(cacheKey);
+    if (cachedResult) {
+      return cachedResult;
+    }
+    
+    // Build Elasticsearch query
+    const query = this.buildSearchQuery(searchRequest);
+    
+    const searchResult = await this.elasticsearchClient.search({
+      index: 'products',
+      body: query
+    });
+    
+    const products = searchResult.body.hits.hits.map(hit => hit._source);
+    
+    // Enrich with real-time inventory
+    const enrichedProducts = await Promise.all(
+      products.map(async (product) => ({
+        ...product,
+        inventory: await this.inventoryService.getCurrentStock(product.productId)
+      }))
+    );
+    
+    const response = {
+      products: enrichedProducts,
+      totalCount: searchResult.body.hits.total.value,
+      facets: this.extractFacets(searchResult.body.aggregations)
+    };
+    
+    // Cache the result
+    await this.cacheService.set(cacheKey, response, 300); // 5 minutes
+    
+    return response;
+  }
+  
+  private buildSearchQuery(request: ProductSearchRequest): any {
+    const query: any = {
+      query: {
+        bool: {
+          must: [],
+          filter: []
+        }
+      },
+      aggs: {
+        categories: { terms: { field: 'categoryId' } },
+        price_ranges: {
+          range: {
+            field: 'price',
+            ranges: [
+              { to: 50 },
+              { from: 50, to: 100 },
+              { from: 100, to: 200 },
+              { from: 200 }
+            ]
+          }
+        }
+      },
+      from: request.offset || 0,
+      size: request.limit || 20
+    };
+    
+    // Text search
+    if (request.query) {
+      query.query.bool.must.push({
+        multi_match: {
+          query: request.query,
+          fields: ['name^2', 'description', 'sku'],
+          fuzziness: 'AUTO'
+        }
+      });
+    }
+    
+    // Category filter
+    if (request.categoryId) {
+      query.query.bool.filter.push({
+        term: { categoryId: request.categoryId }
+      });
+    }
+    
+    // Price range filter
+    if (request.priceRange) {
+      query.query.bool.filter.push({
+        range: {
+          price: {
+            gte: request.priceRange.min,
+            lte: request.priceRange.max
+          }
+        }
+      });
+    }
+    
+    // Active products only
+    query.query.bool.filter.push({
+      term: { isActive: true }
+    });
+    
+    // Sorting
+    if (request.sortBy) {
+      query.sort = [{ [request.sortBy]: { order: request.sortOrder || 'asc' } }];
+    }
+    
+    return query;
+  }
 }
 ```
 
-#### 3. Order Service
-```typescript
-// Order Service Structure
-interface OrderService {
-  orderController: OrderController;
-  orderRepository: OrderRepository;
-  orderItemRepository: OrderItemRepository;
-  orderStateMachine: OrderStateMachine;
-  inventoryService: InventoryService;
-  notificationService: NotificationService;
-}
+### 4. Order Service Component
 
-// Order Entity
+```typescript
 interface Order {
   orderId: string;
-  userId: string;
+  consumerId: string;
+  orderNumber: string;
+  items: OrderItem[];
   totalAmount: number;
   status: OrderStatus;
-  orderDate: Date;
-  shippingAddress: Address;
-  billingAddress: Address;
   paymentId: string;
-  trackingNumber?: string;
-  estimatedDelivery?: Date;
+  shippingAddress: Address;
   createdAt: Date;
   updatedAt: Date;
 }
 
 interface OrderItem {
   orderItemId: string;
-  orderId: string;
   productId: string;
   quantity: number;
   unitPrice: number;
   totalPrice: number;
-  productSnapshot: ProductSnapshot;
+  sellerId: string;
 }
 
 enum OrderStatus {
-  PENDING = 'pending',
-  CONFIRMED = 'confirmed',
-  PROCESSING = 'processing',
-  SHIPPED = 'shipped',
-  DELIVERED = 'delivered',
-  CANCELLED = 'cancelled',
-  REFUNDED = 'refunded'
-}
-```
-
-#### 4. Payment Service
-```typescript
-// Payment Service Structure
-interface PaymentService {
-  paymentController: PaymentController;
-  paymentRepository: PaymentRepository;
-  paymentGatewayService: PaymentGatewayService;
-  refundService: RefundService;
-  fraudDetectionService: FraudDetectionService;
+  PENDING = 'PENDING',
+  CONFIRMED = 'CONFIRMED',
+  PROCESSING = 'PROCESSING',
+  SHIPPED = 'SHIPPED',
+  DELIVERED = 'DELIVERED',
+  CANCELLED = 'CANCELLED',
+  REFUNDED = 'REFUNDED'
 }
 
-// Payment Entity
-interface Payment {
-  paymentId: string;
-  orderId: string;
-  amount: number;
-  currency: string;
-  method: PaymentMethod;
-  status: PaymentStatus;
-  transactionId: string;
-  gatewayResponse: GatewayResponse;
-  createdAt: Date;
-  processedAt?: Date;
-}
-
-enum PaymentMethod {
-  CREDIT_CARD = 'credit_card',
-  DEBIT_CARD = 'debit_card',
-  PAYPAL = 'paypal',
-  STRIPE = 'stripe',
-  BANK_TRANSFER = 'bank_transfer'
-}
-
-enum PaymentStatus {
-  PENDING = 'pending',
-  PROCESSING = 'processing',
-  COMPLETED = 'completed',
-  FAILED = 'failed',
-  REFUNDED = 'refunded',
-  CANCELLED = 'cancelled'
-}
-```
-
-## Database Schema Design
-
-### PostgreSQL Schema
-
-#### Users Table
-```sql
-CREATE TABLE users (
-    user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email VARCHAR(255) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    first_name VARCHAR(100) NOT NULL,
-    last_name VARCHAR(100) NOT NULL,
-    role user_role_enum NOT NULL DEFAULT 'consumer',
-    status user_status_enum NOT NULL DEFAULT 'pending_verification',
-    mfa_enabled BOOLEAN DEFAULT FALSE,
-    mfa_secret VARCHAR(32),
-    phone_number VARCHAR(20),
-    date_of_birth DATE,
-    last_login TIMESTAMP,
-    failed_login_attempts INTEGER DEFAULT 0,
-    account_locked_until TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TYPE user_role_enum AS ENUM ('consumer', 'seller', 'admin');
-CREATE TYPE user_status_enum AS ENUM ('active', 'inactive', 'suspended', 'pending_verification');
-
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_role ON users(role);
-CREATE INDEX idx_users_status ON users(status);
-```
-
-#### Products Table
-```sql
-CREATE TABLE products (
-    product_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR(255) NOT NULL,
-    description TEXT,
-    price DECIMAL(10,2) NOT NULL,
-    category_id UUID NOT NULL,
-    seller_id UUID NOT NULL,
-    inventory INTEGER NOT NULL DEFAULT 0,
-    sku VARCHAR(100) UNIQUE,
-    weight DECIMAL(8,2),
-    dimensions JSONB,
-    status product_status_enum NOT NULL DEFAULT 'active',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (category_id) REFERENCES categories(category_id),
-    FOREIGN KEY (seller_id) REFERENCES users(user_id)
-);
-
-CREATE TYPE product_status_enum AS ENUM ('active', 'inactive', 'out_of_stock', 'discontinued');
-
-CREATE INDEX idx_products_category ON products(category_id);
-CREATE INDEX idx_products_seller ON products(seller_id);
-CREATE INDEX idx_products_status ON products(status);
-CREATE INDEX idx_products_price ON products(price);
-CREATE INDEX idx_products_name_gin ON products USING gin(to_tsvector('english', name));
-```
-
-#### Orders Table
-```sql
-CREATE TABLE orders (
-    order_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL,
-    total_amount DECIMAL(12,2) NOT NULL,
-    status order_status_enum NOT NULL DEFAULT 'pending',
-    order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    shipping_address JSONB NOT NULL,
-    billing_address JSONB NOT NULL,
-    payment_id UUID,
-    tracking_number VARCHAR(100),
-    estimated_delivery TIMESTAMP,
-    actual_delivery TIMESTAMP,
-    notes TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(user_id),
-    FOREIGN KEY (payment_id) REFERENCES payments(payment_id)
-);
-
-CREATE TYPE order_status_enum AS ENUM ('pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded');
-
-CREATE INDEX idx_orders_user ON orders(user_id);
-CREATE INDEX idx_orders_status ON orders(status);
-CREATE INDEX idx_orders_date ON orders(order_date);
-```
-
-#### Order Items Table
-```sql
-CREATE TABLE order_items (
-    order_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id UUID NOT NULL,
-    product_id UUID NOT NULL,
-    quantity INTEGER NOT NULL,
-    unit_price DECIMAL(10,2) NOT NULL,
-    total_price DECIMAL(12,2) NOT NULL,
-    product_snapshot JSONB NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (order_id) REFERENCES orders(order_id) ON DELETE CASCADE,
-    FOREIGN KEY (product_id) REFERENCES products(product_id)
-);
-
-CREATE INDEX idx_order_items_order ON order_items(order_id);
-CREATE INDEX idx_order_items_product ON order_items(product_id);
-```
-
-#### Payments Table
-```sql
-CREATE TABLE payments (
-    payment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id UUID NOT NULL,
-    amount DECIMAL(12,2) NOT NULL,
-    currency VARCHAR(3) DEFAULT 'USD',
-    method payment_method_enum NOT NULL,
-    status payment_status_enum NOT NULL DEFAULT 'pending',
-    transaction_id VARCHAR(255),
-    gateway_response JSONB,
-    fraud_score DECIMAL(3,2),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    processed_at TIMESTAMP,
-    FOREIGN KEY (order_id) REFERENCES orders(order_id)
-);
-
-CREATE TYPE payment_method_enum AS ENUM ('credit_card', 'debit_card', 'paypal', 'stripe', 'bank_transfer');
-CREATE TYPE payment_status_enum AS ENUM ('pending', 'processing', 'completed', 'failed', 'refunded', 'cancelled');
-
-CREATE INDEX idx_payments_order ON payments(order_id);
-CREATE INDEX idx_payments_status ON payments(status);
-CREATE INDEX idx_payments_transaction ON payments(transaction_id);
-```
-
-## API Specifications
-
-### User Service APIs
-
-#### Authentication Endpoints
-```yaml
-# POST /api/v1/auth/register
-RegisterRequest:
-  type: object
-  required: [email, password, firstName, lastName]
-  properties:
-    email:
-      type: string
-      format: email
-    password:
-      type: string
-      minLength: 8
-      pattern: '^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]'
-    firstName:
-      type: string
-      maxLength: 100
-    lastName:
-      type: string
-      maxLength: 100
-    role:
-      type: string
-      enum: [consumer, seller]
-
-RegisterResponse:
-  type: object
-  properties:
-    success:
-      type: boolean
-    message:
-      type: string
-    userId:
-      type: string
-      format: uuid
-    verificationToken:
-      type: string
-```
-
-```yaml
-# POST /api/v1/auth/login
-LoginRequest:
-  type: object
-  required: [email, password]
-  properties:
-    email:
-      type: string
-      format: email
-    password:
-      type: string
-    mfaCode:
-      type: string
-      pattern: '^\d{6}$'
-
-LoginResponse:
-  type: object
-  properties:
-    success:
-      type: boolean
-    accessToken:
-      type: string
-    refreshToken:
-      type: string
-    user:
-      $ref: '#/components/schemas/UserProfile'
-    expiresIn:
-      type: integer
-```
-
-### Product Service APIs
-
-#### Product Management Endpoints
-```yaml
-# GET /api/v1/products
-ProductSearchRequest:
-  type: object
-  properties:
-    query:
-      type: string
-    categoryId:
-      type: string
-      format: uuid
-    minPrice:
-      type: number
-    maxPrice:
-      type: number
-    sortBy:
-      type: string
-      enum: [price_asc, price_desc, name_asc, name_desc, rating_desc, created_desc]
-    page:
-      type: integer
-      minimum: 1
-    limit:
-      type: integer
-      minimum: 1
-      maximum: 100
-
-ProductSearchResponse:
-  type: object
-  properties:
-    products:
-      type: array
-      items:
-        $ref: '#/components/schemas/Product'
-    pagination:
-      $ref: '#/components/schemas/PaginationInfo'
-    filters:
-      $ref: '#/components/schemas/SearchFilters'
-```
-
-```yaml
-# POST /api/v1/products
-CreateProductRequest:
-  type: object
-  required: [name, description, price, categoryId, inventory]
-  properties:
-    name:
-      type: string
-      maxLength: 255
-    description:
-      type: string
-    price:
-      type: number
-      minimum: 0
-    categoryId:
-      type: string
-      format: uuid
-    inventory:
-      type: integer
-      minimum: 0
-    sku:
-      type: string
-      maxLength: 100
-    specifications:
-      type: array
-      items:
-        $ref: '#/components/schemas/ProductSpecification'
-
-CreateProductResponse:
-  type: object
-  properties:
-    success:
-      type: boolean
-    productId:
-      type: string
-      format: uuid
-    product:
-      $ref: '#/components/schemas/Product'
-```
-
-### Order Service APIs
-
-#### Order Management Endpoints
-```yaml
-# POST /api/v1/orders
-CreateOrderRequest:
-  type: object
-  required: [items, shippingAddress, paymentMethod]
-  properties:
-    items:
-      type: array
-      items:
-        type: object
-        required: [productId, quantity]
-        properties:
-          productId:
-            type: string
-            format: uuid
-          quantity:
-            type: integer
-            minimum: 1
-    shippingAddress:
-      $ref: '#/components/schemas/Address'
-    billingAddress:
-      $ref: '#/components/schemas/Address'
-    paymentMethod:
-      $ref: '#/components/schemas/PaymentMethod'
-    notes:
-      type: string
-      maxLength: 500
-
-CreateOrderResponse:
-  type: object
-  properties:
-    success:
-      type: boolean
-    orderId:
-      type: string
-      format: uuid
-    order:
-      $ref: '#/components/schemas/Order'
-    paymentUrl:
-      type: string
-      format: uri
-```
-
-## Component Implementation Details
-
-### User Service Implementation
-
-#### Authentication Service
-```typescript
-class AuthService {
-  private jwtService: JWTService;
-  private passwordService: PasswordService;
-  private mfaService: MFAService;
-  private auditService: AuditService;
-  private redisClient: Redis;
-
-  async authenticateUser(email: string, password: string, mfaCode?: string): Promise<AuthResult> {
+class OrderService {
+  private orderRepository: OrderRepository;
+  private cartService: CartService;
+  private inventoryService: InventoryService;
+  private paymentService: PaymentService;
+  private notificationService: NotificationService;
+  private eventBus: EventBus;
+  
+  async createOrder(orderRequest: CreateOrderRequest): Promise<CreateOrderResponse> {
+    // Start transaction
+    const transaction = await this.orderRepository.beginTransaction();
+    
     try {
-      // Rate limiting check
-      await this.checkRateLimit(email);
+      // Get cart items
+      const cartItems = await this.cartService.getCartItems(orderRequest.consumerId);
+      if (!cartItems || cartItems.length === 0) {
+        throw new ValidationError('Cart is empty');
+      }
       
-      // Get user from database
-      const user = await this.userRepository.findByEmail(email);
-      if (!user) {
-        await this.auditService.logFailedLogin(email, 'USER_NOT_FOUND');
-        throw new AuthenticationError('Invalid credentials');
+      // Validate inventory
+      const inventoryCheck = await this.validateInventory(cartItems);
+      if (!inventoryCheck.valid) {
+        throw new InsufficientInventoryError(inventoryCheck.unavailableItems);
       }
-
-      // Check account status
-      if (user.status !== UserStatus.ACTIVE) {
-        await this.auditService.logFailedLogin(email, 'ACCOUNT_INACTIVE');
-        throw new AuthenticationError('Account is not active');
-      }
-
-      // Check account lockout
-      if (user.accountLockedUntil && user.accountLockedUntil > new Date()) {
-        throw new AuthenticationError('Account is temporarily locked');
-      }
-
-      // Verify password
-      const isPasswordValid = await this.passwordService.verify(password, user.passwordHash);
-      if (!isPasswordValid) {
-        await this.handleFailedLogin(user);
-        throw new AuthenticationError('Invalid credentials');
-      }
-
-      // Verify MFA if enabled
-      if (user.mfaEnabled) {
-        if (!mfaCode) {
-          return { requiresMFA: true, tempToken: this.generateTempToken(user.userId) };
-        }
-        
-        const isMFAValid = await this.mfaService.verifyCode(user.mfaSecret, mfaCode);
-        if (!isMFAValid) {
-          await this.auditService.logFailedLogin(email, 'INVALID_MFA');
-          throw new AuthenticationError('Invalid MFA code');
-        }
-      }
-
-      // Generate tokens
-      const tokens = await this.generateTokens(user);
       
-      // Update last login
-      await this.userRepository.updateLastLogin(user.userId);
+      // Reserve inventory
+      const reservations = await this.inventoryService.reserveItems(cartItems);
       
-      // Reset failed login attempts
-      await this.userRepository.resetFailedLoginAttempts(user.userId);
+      // Calculate totals
+      const orderItems = cartItems.map(item => ({
+        orderItemId: generateUUID(),
+        productId: item.productId,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        totalPrice: item.quantity * item.unitPrice,
+        sellerId: item.sellerId
+      }));
       
-      // Log successful login
-      await this.auditService.logSuccessfulLogin(user.userId, email);
-
-      return {
-        success: true,
-        user: this.sanitizeUser(user),
-        tokens
+      const totalAmount = orderItems.reduce((sum, item) => sum + item.totalPrice, 0);
+      
+      // Create order
+      const order: Order = {
+        orderId: generateUUID(),
+        consumerId: orderRequest.consumerId,
+        orderNumber: await this.generateOrderNumber(),
+        items: orderItems,
+        totalAmount,
+        status: OrderStatus.PENDING,
+        paymentId: null,
+        shippingAddress: orderRequest.shippingAddress,
+        createdAt: new Date(),
+        updatedAt: new Date()
       };
+      
+      const savedOrder = await this.orderRepository.save(order, transaction);
+      
+      // Clear cart
+      await this.cartService.clearCart(orderRequest.consumerId, transaction);
+      
+      // Commit transaction
+      await transaction.commit();
+      
+      // Publish event
+      await this.eventBus.publish('order.created', {
+        orderId: savedOrder.orderId,
+        consumerId: savedOrder.consumerId,
+        totalAmount: savedOrder.totalAmount
+      });
+      
+      return {
+        orderId: savedOrder.orderId,
+        orderNumber: savedOrder.orderNumber,
+        totalAmount: savedOrder.totalAmount,
+        status: savedOrder.status
+      };
+      
     } catch (error) {
-      await this.auditService.logError('AUTH_ERROR', { email, error: error.message });
+      await transaction.rollback();
       throw error;
     }
   }
-
-  private async handleFailedLogin(user: User): Promise<void> {
-    const failedAttempts = user.failedLoginAttempts + 1;
-    
-    if (failedAttempts >= 5) {
-      const lockoutUntil = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
-      await this.userRepository.lockAccount(user.userId, lockoutUntil);
-      await this.auditService.logAccountLockout(user.userId, user.email);
-    } else {
-      await this.userRepository.incrementFailedLoginAttempts(user.userId);
+  
+  async updateOrderStatus(orderId: string, newStatus: OrderStatus, metadata?: any): Promise<void> {
+    const order = await this.orderRepository.findById(orderId);
+    if (!order) {
+      throw new NotFoundError('Order not found');
     }
     
-    await this.auditService.logFailedLogin(user.email, 'INVALID_PASSWORD');
-  }
-
-  private async generateTokens(user: User): Promise<TokenPair> {
-    const payload = {
-      userId: user.userId,
-      email: user.email,
-      role: user.role
-    };
-
-    const accessToken = await this.jwtService.sign(payload, { expiresIn: '15m' });
-    const refreshToken = await this.jwtService.sign(
-      { userId: user.userId, type: 'refresh' },
-      { expiresIn: '7d' }
-    );
-
-    // Store refresh token in Redis
-    await this.redisClient.setex(
-      `refresh_token:${user.userId}`,
-      7 * 24 * 60 * 60, // 7 days
-      refreshToken
-    );
-
-    return { accessToken, refreshToken };
-  }
-}
-```
-
-#### Password Service
-```typescript
-class PasswordService {
-  private readonly saltRounds = 12;
-
-  async hash(password: string): Promise<string> {
-    // Validate password strength
-    this.validatePasswordStrength(password);
+    // Validate status transition
+    if (!this.isValidStatusTransition(order.status, newStatus)) {
+      throw new ValidationError(`Invalid status transition from ${order.status} to ${newStatus}`);
+    }
     
-    return await bcrypt.hash(password, this.saltRounds);
-  }
-
-  async verify(password: string, hash: string): Promise<boolean> {
-    return await bcrypt.compare(password, hash);
-  }
-
-  private validatePasswordStrength(password: string): void {
-    const minLength = 8;
-    const hasUppercase = /[A-Z]/.test(password);
-    const hasLowercase = /[a-z]/.test(password);
-    const hasNumbers = /\d/.test(password);
-    const hasSpecialChar = /[@$!%*?&]/.test(password);
-
-    if (password.length < minLength) {
-      throw new ValidationError('Password must be at least 8 characters long');
-    }
-
-    if (!hasUppercase || !hasLowercase || !hasNumbers || !hasSpecialChar) {
-      throw new ValidationError(
-        'Password must contain uppercase, lowercase, number, and special character'
-      );
-    }
-
-    // Check against common passwords
-    if (this.isCommonPassword(password)) {
-      throw new ValidationError('Password is too common');
-    }
-  }
-
-  private isCommonPassword(password: string): boolean {
-    const commonPasswords = [
-      'password', '123456', 'password123', 'admin', 'qwerty'
-      // Add more common passwords
-    ];
-    return commonPasswords.includes(password.toLowerCase());
-  }
-}
-```
-
-### Product Service Implementation
-
-#### Product Controller
-```typescript
-class ProductController {
-  private productService: ProductService;
-  private imageService: ImageService;
-  private cacheService: CacheService;
-  private searchService: SearchService;
-
-  async searchProducts(req: Request, res: Response): Promise<void> {
-    try {
-      const searchParams = this.validateSearchParams(req.query);
-      
-      // Check cache first
-      const cacheKey = this.generateCacheKey('product_search', searchParams);
-      const cachedResult = await this.cacheService.get(cacheKey);
-      
-      if (cachedResult) {
-        res.json(cachedResult);
-        return;
-      }
-
-      // Perform search
-      const searchResult = await this.searchService.searchProducts(searchParams);
-      
-      // Cache result for 5 minutes
-      await this.cacheService.setex(cacheKey, 300, searchResult);
-      
-      res.json(searchResult);
-    } catch (error) {
-      this.handleError(error, res);
-    }
-  }
-
-  async createProduct(req: Request, res: Response): Promise<void> {
-    try {
-      const userId = req.user.userId;
-      const productData = this.validateProductData(req.body);
-      
-      // Verify seller permissions
-      if (req.user.role !== UserRole.SELLER) {
-        throw new ForbiddenError('Only sellers can create products');
-      }
-
-      // Create product
-      const product = await this.productService.createProduct({
-        ...productData,
-        sellerId: userId
-      });
-
-      // Index for search
-      await this.searchService.indexProduct(product);
-      
-      // Invalidate related caches
-      await this.invalidateProductCaches(product.categoryId);
-
-      res.status(201).json({
-        success: true,
-        productId: product.productId,
-        product
-      });
-    } catch (error) {
-      this.handleError(error, res);
-    }
-  }
-
-  async uploadProductImages(req: Request, res: Response): Promise<void> {
-    try {
-      const { productId } = req.params;
-      const files = req.files as Express.Multer.File[];
-      
-      // Verify product ownership
-      const product = await this.productService.getProduct(productId);
-      if (product.sellerId !== req.user.userId) {
-        throw new ForbiddenError('Cannot modify product images');
-      }
-
-      // Upload images
-      const imageUrls = await Promise.all(
-        files.map(file => this.imageService.uploadProductImage(file, productId))
-      );
-
-      // Update product with image URLs
-      await this.productService.updateProductImages(productId, imageUrls);
-      
-      res.json({
-        success: true,
-        images: imageUrls
-      });
-    } catch (error) {
-      this.handleError(error, res);
-    }
-  }
-
-  private validateSearchParams(query: any): ProductSearchParams {
-    const schema = Joi.object({
-      query: Joi.string().max(100).optional(),
-      categoryId: Joi.string().uuid().optional(),
-      minPrice: Joi.number().min(0).optional(),
-      maxPrice: Joi.number().min(0).optional(),
-      sortBy: Joi.string().valid(
-        'price_asc', 'price_desc', 'name_asc', 'name_desc', 'rating_desc', 'created_desc'
-      ).default('created_desc'),
-      page: Joi.number().integer().min(1).default(1),
-      limit: Joi.number().integer().min(1).max(100).default(20)
+    // Update order
+    await this.orderRepository.updateStatus(orderId, newStatus);
+    
+    // Send notification
+    await this.notificationService.sendOrderStatusUpdate({
+      userId: order.consumerId,
+      orderId: order.orderId,
+      orderNumber: order.orderNumber,
+      status: newStatus,
+      metadata
     });
-
-    const { error, value } = schema.validate(query);
-    if (error) {
-      throw new ValidationError(error.details[0].message);
-    }
-
-    return value;
+    
+    // Publish event
+    await this.eventBus.publish('order.status_updated', {
+      orderId,
+      oldStatus: order.status,
+      newStatus,
+      metadata
+    });
   }
 }
+```
+
+### 5. Payment Service Component
+
+```typescript
+interface PaymentRequest {
+  orderId: string;
+  amount: number;
+  currency: string;
+  paymentMethodId: string;
+  billingAddress: Address;
+}
+
+interface PaymentResponse {
+  paymentId: string;
+  status: PaymentStatus;
+  transactionId: string;
+  gatewayResponse: any;
+}
+
+enum PaymentStatus {
+  PENDING = 'PENDING',
+  PROCESSING = 'PROCESSING',
+  COMPLETED = 'COMPLETED',
+  FAILED = 'FAILED',
+  REFUNDED = 'REFUNDED'
+}
+
+class PaymentService {
+  private paymentRepository: PaymentRepository;
+  private stripeGateway: StripeGateway;
+  private paypalGateway: PayPalGateway;
+  private fraudDetectionService: FraudDetectionService;
+  private encryptionService: EncryptionService;
+  
+  async processPayment(paymentRequest: PaymentRequest): Promise<PaymentResponse> {
+    // Fraud detection
+    const fraudCheck = await this.fraudDetectionService.analyze(paymentRequest);
+    if (fraudCheck.riskScore > 0.8) {
+      throw new FraudDetectedError('High fraud risk detected');
+    }
+    
+    // Get payment method
+    const paymentMethod = await this.getPaymentMethod(paymentRequest.paymentMethodId);
+    
+    // Create payment record
+    const payment = {
+      paymentId: generateUUID(),
+      orderId: paymentRequest.orderId,
+      amount: paymentRequest.amount,
+      currency: paymentRequest.currency,
+      status: PaymentStatus.PENDING,
+      methodId: paymentRequest.paymentMethodId,
+      createdAt: new Date()
+    };
+    
+    await this.paymentRepository.save(payment);
+    
+    try {
+      // Process payment based on gateway
+      let gatewayResponse;
+      
+      switch (paymentMethod.provider) {
+        case 'stripe':
+          gatewayResponse = await this.stripeGateway.processPayment({
+            amount: paymentRequest.amount,
+            currency: paymentRequest.currency,
+            paymentMethodToken: paymentMethod.token,
+            orderId: paymentRequest.orderId
+          });
+          break;
+          
+        case 'paypal':
+          gatewayResponse = await this.paypalGateway.processPayment({
+            amount: paymentRequest.amount,
+            currency: paymentRequest.currency,
+            paymentMethodToken: paymentMethod.token,
+            orderId: paymentRequest.orderId
+          });
+          break;
+          
+        default:
+          throw new UnsupportedPaymentMethodError('Unsupported payment provider');
+      }
+      
+      // Update payment status
+      await this.paymentRepository.updatePayment(payment.paymentId, {
+        status: PaymentStatus.COMPLETED,
+        transactionId: gatewayResponse.transactionId,
+        gatewayResponse: this.encryptionService.encrypt(JSON.stringify(gatewayResponse)),
+        processedAt: new Date()
+      });
+      
+      return {
+        paymentId: payment.paymentId,
+        status: PaymentStatus.COMPLETED,
+        transactionId: gatewayResponse.transactionId,
+        gatewayResponse
+      };
+      
+    } catch (error) {
+      // Update payment status to failed
+      await this.paymentRepository.updatePayment(payment.paymentId, {
+        status: PaymentStatus.FAILED,
+        gatewayResponse: this.encryptionService.encrypt(JSON.stringify({ error: error.message })),
+        processedAt: new Date()
+      });
+      
+      throw new PaymentProcessingError('Payment processing failed', error);
+    }
+  }
+}
+```
+
+## Data Flow Diagrams
+
+### User Registration Flow
+
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│   Client    │    │ API Gateway │    │User Service │    │  Database   │
+└──────┬──────┘    └──────┬──────┘    └──────┬──────┘    └──────┬──────┘
+       │                  │                  │                  │
+       │ POST /register   │                  │                  │
+       ├─────────────────►│                  │                  │
+       │                  │ Validate & Route │                  │
+       │                  ├─────────────────►│                  │
+       │                  │                  │ Check if exists  │
+       │                  │                  ├─────────────────►│
+       │                  │                  │◄─────────────────┤
+       │                  │                  │ Hash password    │
+       │                  │                  │ Create user      │
+       │                  │                  ├─────────────────►│
+       │                  │                  │◄─────────────────┤
+       │                  │ Success Response │                  │
+       │                  │◄─────────────────┤                  │
+       │◄─────────────────┤                  │                  │
+       │                  │                  │                  │
+```
+
+### Product Search Flow
+
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│   Client    │    │ API Gateway │    │Product Svc  │    │    Cache    │    │Elasticsearch│
+└──────┬──────┘    └──────┬──────┘    └──────┬──────┘    └──────┬──────┘    └──────┬──────┘
+       │                  │                  │                  │                  │
+       │ GET /search      │                  │                  │                  │
+       ├─────────────────►│                  │                  │                  │
+       │                  │ Route request    │                  │                  │
+       │                  ├─────────────────►│                  │                  │
+       │                  │                  │ Check cache      │                  │
+       │                  │                  ├─────────────────►│                  │
+       │                  │                  │◄─────────────────┤                  │
+       │                  │                  │ Cache miss       │                  │
+       │                  │                  │ Search query     │                  │
+       │                  │                  ├──────────────────────────────────►│
+       │                  │                  │◄──────────────────────────────────┤
+       │                  │                  │ Cache results    │                  │
+       │                  │                  ├─────────────────►│                  │
+       │                  │ Return results   │                  │                  │
+       │                  │◄─────────────────┤                  │                  │
+       │◄─────────────────┤                  │                  │                  │
+```
+
+### Order Processing Flow
+
+```
+┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐
+│ Client  │  │API Gate │  │Order Svc│  │Pay Svc  │  │Inventory│  │Notify   │
+└────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘
+     │            │            │            │            │            │
+     │POST /order │            │            │            │            │
+     ├───────────►│            │            │            │            │
+     │            │Route       │            │            │            │
+     │            ├───────────►│            │            │            │
+     │            │            │Validate    │            │            │
+     │            │            │cart        │            │            │
+     │            │            │Check inv   │            │            │
+     │            │            ├────────────────────────►│            │
+     │            │            │◄────────────────────────┤            │
+     │            │            │Reserve inv │            │            │
+     │            │            ├────────────────────────►│            │
+     │            │            │Create order│            │            │
+     │            │            │Process pay │            │            │
+     │            │            ├───────────►│            │            │
+     │            │            │◄───────────┤            │            │
+     │            │            │Send notify │            │            │
+     │            │            ├────────────────────────────────────►│
+     │            │Response    │            │            │            │
+     │            │◄───────────┤            │            │            │
+     │◄───────────┤            │            │            │            │
 ```
 
 ## Sequence Diagrams
 
-### User Registration Flow
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API_Gateway
-    participant User_Service
-    participant Database
-    participant Email_Service
-    participant Audit_Service
+### Authentication Sequence
 
-    Client->>API_Gateway: POST /auth/register
-    API_Gateway->>API_Gateway: Rate Limiting
-    API_Gateway->>API_Gateway: Input Validation
-    API_Gateway->>User_Service: Forward Request
-    
-    User_Service->>User_Service: Validate Email Format
-    User_Service->>User_Service: Check Password Strength
-    User_Service->>Database: Check Email Exists
-    
-    alt Email Already Exists
-        Database-->>User_Service: Email Found
-        User_Service-->>API_Gateway: Error: Email Exists
-        API_Gateway-->>Client: 409 Conflict
-    else Email Available
-        Database-->>User_Service: Email Available
-        User_Service->>User_Service: Hash Password
-        User_Service->>Database: Create User Record
-        Database-->>User_Service: User Created
-        
-        User_Service->>Email_Service: Send Verification Email
-        User_Service->>Audit_Service: Log Registration
-        
-        User_Service-->>API_Gateway: Success Response
-        API_Gateway-->>Client: 201 Created
-        
-        Email_Service-->>Client: Verification Email
-    end
+```
+actor User
+participant Client
+participant APIGateway
+participant UserService
+participant Database
+participant AuditService
+
+User->>Client: Enter credentials
+Client->>APIGateway: POST /auth/login
+APIGateway->>UserService: Forward request
+UserService->>Database: Find user by email
+Database-->>UserService: User data
+UserService->>UserService: Verify password
+alt Password valid
+    UserService->>Database: Update last login
+    UserService->>UserService: Generate JWT tokens
+    UserService->>AuditService: Log successful login
+    UserService-->>APIGateway: Return tokens
+    APIGateway-->>Client: Authentication response
+    Client-->>User: Login successful
+else Password invalid
+    UserService->>AuditService: Log failed attempt
+    UserService-->>APIGateway: Authentication error
+    APIGateway-->>Client: 401 Unauthorized
+    Client-->>User: Login failed
+end
 ```
 
-### Product Search Flow
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API_Gateway
-    participant Product_Service
-    participant Cache
-    participant Search_Engine
-    participant Database
-    participant Analytics
+### Payment Processing Sequence
 
-    Client->>API_Gateway: GET /products?query=laptop
-    API_Gateway->>API_Gateway: Authentication (Optional)
-    API_Gateway->>Product_Service: Forward Request
-    
-    Product_Service->>Product_Service: Validate Search Params
-    Product_Service->>Cache: Check Cache
-    
-    alt Cache Hit
-        Cache-->>Product_Service: Cached Results
-        Product_Service-->>API_Gateway: Search Results
-        API_Gateway-->>Client: 200 OK
-    else Cache Miss
-        Cache-->>Product_Service: Cache Miss
-        Product_Service->>Search_Engine: Execute Search Query
-        Search_Engine->>Database: Fetch Product Details
-        Database-->>Search_Engine: Product Data
-        Search_Engine-->>Product_Service: Search Results
-        
-        Product_Service->>Cache: Store Results (TTL: 5min)
-        Product_Service->>Analytics: Log Search Event
-        
-        Product_Service-->>API_Gateway: Search Results
-        API_Gateway-->>Client: 200 OK
+```
+participant OrderService
+participant PaymentService
+participant FraudDetection
+participant PaymentGateway
+participant Database
+participant NotificationService
+
+OrderService->>PaymentService: Process payment
+PaymentService->>FraudDetection: Analyze transaction
+FraudDetection-->>PaymentService: Risk score
+alt Low risk
+    PaymentService->>Database: Create payment record
+    PaymentService->>PaymentGateway: Process payment
+    PaymentGateway-->>PaymentService: Transaction result
+    alt Payment successful
+        PaymentService->>Database: Update payment status
+        PaymentService->>NotificationService: Send confirmation
+        PaymentService-->>OrderService: Payment successful
+    else Payment failed
+        PaymentService->>Database: Update payment status
+        PaymentService-->>OrderService: Payment failed
     end
+else High risk
+    PaymentService-->>OrderService: Fraud detected
+end
 ```
 
-### Order Processing Flow
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API_Gateway
-    participant Order_Service
-    participant Product_Service
-    participant Payment_Service
-    participant Inventory_Service
-    participant Notification_Service
-    participant Database
+## Implementation Details
 
-    Client->>API_Gateway: POST /orders
-    API_Gateway->>API_Gateway: Authentication
-    API_Gateway->>Order_Service: Create Order Request
-    
-    Order_Service->>Order_Service: Validate Order Data
-    Order_Service->>Product_Service: Validate Products
-    Product_Service-->>Order_Service: Product Details
-    
-    Order_Service->>Inventory_Service: Check Availability
-    
-    alt Insufficient Inventory
-        Inventory_Service-->>Order_Service: Insufficient Stock
-        Order_Service-->>API_Gateway: Error: Out of Stock
-        API_Gateway-->>Client: 400 Bad Request
-    else Stock Available
-        Inventory_Service-->>Order_Service: Stock Confirmed
-        
-        Order_Service->>Database: Create Order Record
-        Database-->>Order_Service: Order Created
-        
-        Order_Service->>Inventory_Service: Reserve Inventory
-        Inventory_Service-->>Order_Service: Inventory Reserved
-        
-        Order_Service->>Payment_Service: Initiate Payment
-        Payment_Service-->>Order_Service: Payment URL
-        
-        Order_Service->>Notification_Service: Send Order Confirmation
-        
-        Order_Service-->>API_Gateway: Order Created
-        API_Gateway-->>Client: 201 Created + Payment URL
-        
-        Notification_Service-->>Client: Order Confirmation Email
-    end
+### Database Schema
+
+```sql
+-- Users table
+CREATE TABLE users (
+    user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_login TIMESTAMP,
+    account_status VARCHAR(50) DEFAULT 'ACTIVE',
+    CONSTRAINT email_format CHECK (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
+);
+
+-- Profiles table
+CREATE TABLE profiles (
+    profile_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    phone VARCHAR(20),
+    address JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Roles table
+CREATE TABLE roles (
+    role_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    role_name VARCHAR(50) UNIQUE NOT NULL,
+    permissions JSONB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- User roles junction table
+CREATE TABLE user_roles (
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    role_id UUID REFERENCES roles(role_id) ON DELETE CASCADE,
+    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, role_id)
+);
+
+-- Categories table
+CREATE TABLE categories (
+    category_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    parent_id UUID REFERENCES categories(category_id),
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Products table
+CREATE TABLE products (
+    product_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    price DECIMAL(10,2) NOT NULL CHECK (price >= 0),
+    sku VARCHAR(100) UNIQUE NOT NULL,
+    inventory INTEGER NOT NULL DEFAULT 0 CHECK (inventory >= 0),
+    images JSONB,
+    seller_id UUID REFERENCES users(user_id),
+    category_id UUID REFERENCES categories(category_id),
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Shopping carts table
+CREATE TABLE shopping_carts (
+    cart_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    consumer_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    session_id VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT true
+);
+
+-- Cart items table
+CREATE TABLE cart_items (
+    cart_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    cart_id UUID REFERENCES shopping_carts(cart_id) ON DELETE CASCADE,
+    product_id UUID REFERENCES products(product_id),
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    unit_price DECIMAL(10,2) NOT NULL,
+    total_price DECIMAL(10,2) GENERATED ALWAYS AS (quantity * unit_price) STORED,
+    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Orders table
+CREATE TABLE orders (
+    order_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    consumer_id UUID REFERENCES users(user_id),
+    order_number VARCHAR(50) UNIQUE NOT NULL,
+    total_amount DECIMAL(10,2) NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+    payment_id UUID,
+    shipping_address JSONB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT valid_status CHECK (status IN ('PENDING', 'CONFIRMED', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'CANCELLED', 'REFUNDED'))
+);
+
+-- Order items table
+CREATE TABLE order_items (
+    order_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id UUID REFERENCES orders(order_id) ON DELETE CASCADE,
+    product_id UUID REFERENCES products(product_id),
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    unit_price DECIMAL(10,2) NOT NULL,
+    total_price DECIMAL(10,2) GENERATED ALWAYS AS (quantity * unit_price) STORED,
+    seller_id UUID REFERENCES users(user_id)
+);
+
+-- Payment methods table
+CREATE TABLE payment_methods (
+    method_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    type VARCHAR(50) NOT NULL,
+    provider VARCHAR(100) NOT NULL,
+    token TEXT NOT NULL, -- Encrypted
+    is_default BOOLEAN DEFAULT false,
+    expiry_date DATE,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Payments table
+CREATE TABLE payments (
+    payment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id UUID REFERENCES orders(order_id),
+    amount DECIMAL(10,2) NOT NULL,
+    currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+    status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+    method_id UUID REFERENCES payment_methods(method_id),
+    transaction_id VARCHAR(255),
+    gateway_response TEXT, -- Encrypted
+    processed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT valid_payment_status CHECK (status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'REFUNDED'))
+);
+
+-- Product reviews table
+CREATE TABLE product_reviews (
+    review_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    product_id UUID REFERENCES products(product_id) ON DELETE CASCADE,
+    consumer_id UUID REFERENCES users(user_id),
+    rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+    comment TEXT,
+    is_verified BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Order tracking table
+CREATE TABLE order_tracking (
+    tracking_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id UUID REFERENCES orders(order_id) ON DELETE CASCADE,
+    status VARCHAR(100) NOT NULL,
+    location VARCHAR(255),
+    carrier_info JSONB,
+    estimated_delivery TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Notifications table
+CREATE TABLE notifications (
+    notification_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    type VARCHAR(50) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    is_read BOOLEAN DEFAULT false,
+    priority VARCHAR(20) DEFAULT 'MEDIUM',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    sent_at TIMESTAMP
+);
+
+-- Disputes table
+CREATE TABLE disputes (
+    dispute_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id UUID REFERENCES orders(order_id),
+    reporter_id UUID REFERENCES users(user_id),
+    type VARCHAR(50) NOT NULL,
+    description TEXT NOT NULL,
+    status VARCHAR(50) DEFAULT 'OPEN',
+    assigned_to UUID REFERENCES users(user_id),
+    resolution TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMP
+);
+
+-- Audit logs table
+CREATE TABLE audit_logs (
+    log_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(user_id),
+    action VARCHAR(100) NOT NULL,
+    entity_type VARCHAR(50),
+    entity_id UUID,
+    old_values JSONB,
+    new_values JSONB,
+    ip_address INET,
+    user_agent TEXT,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for performance
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_active ON users(is_active);
+CREATE INDEX idx_products_category ON products(category_id);
+CREATE INDEX idx_products_seller ON products(seller_id);
+CREATE INDEX idx_products_active ON products(is_active);
+CREATE INDEX idx_orders_consumer ON orders(consumer_id);
+CREATE INDEX idx_orders_status ON orders(status);
+CREATE INDEX idx_orders_created ON orders(created_at);
+CREATE INDEX idx_payments_order ON payments(order_id);
+CREATE INDEX idx_payments_status ON payments(status);
+CREATE INDEX idx_audit_logs_user ON audit_logs(user_id);
+CREATE INDEX idx_audit_logs_timestamp ON audit_logs(timestamp);
+CREATE INDEX idx_notifications_user_unread ON notifications(user_id, is_read);
+
+-- Full-text search indexes
+CREATE INDEX idx_products_search ON products USING gin(to_tsvector('english', name || ' ' || description));
 ```
 
-### Payment Processing Flow
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Payment_Gateway
-    participant API_Gateway
-    participant Payment_Service
-    participant Order_Service
-    participant Fraud_Detection
-    participant Database
-    participant Notification_Service
+### API Specifications
 
-    Client->>Payment_Gateway: Submit Payment
-    Payment_Gateway->>API_Gateway: Payment Webhook
-    API_Gateway->>Payment_Service: Process Payment
-    
-    Payment_Service->>Fraud_Detection: Analyze Transaction
-    
-    alt High Fraud Risk
-        Fraud_Detection-->>Payment_Service: High Risk Score
-        Payment_Service->>Database: Update Payment (FRAUD_REVIEW)
-        Payment_Service->>Notification_Service: Alert Admin
-        Payment_Service-->>API_Gateway: Payment Under Review
-    else Low Fraud Risk
-        Fraud_Detection-->>Payment_Service: Low Risk Score
-        
-        Payment_Service->>Database: Update Payment (COMPLETED)
-        Payment_Service->>Order_Service: Payment Confirmed
-        
-        Order_Service->>Database: Update Order Status
-        Order_Service->>Notification_Service: Send Confirmation
-        
-        Payment_Service-->>API_Gateway: Payment Success
-        Notification_Service-->>Client: Payment Confirmation
-    end
-```
+#### User Management APIs
 
-## Security Implementation
+```yaml
+# User Registration
+POST /api/v1/users/register
+Content-Type: application/json
 
-### JWT Token Management
-```typescript
-class JWTService {
-  private accessTokenSecret: string;
-  private refreshTokenSecret: string;
-  private redisClient: Redis;
-
-  constructor() {
-    this.accessTokenSecret = process.env.JWT_ACCESS_SECRET!;
-    this.refreshTokenSecret = process.env.JWT_REFRESH_SECRET!;
-  }
-
-  async generateTokenPair(payload: TokenPayload): Promise<TokenPair> {
-    const accessToken = jwt.sign(payload, this.accessTokenSecret, {
-      expiresIn: '15m',
-      issuer: 'shopping-platform',
-      audience: 'shopping-platform-users'
-    });
-
-    const refreshToken = jwt.sign(
-      { userId: payload.userId, type: 'refresh' },
-      this.refreshTokenSecret,
-      {
-        expiresIn: '7d',
-        issuer: 'shopping-platform'
-      }
-    );
-
-    // Store refresh token in Redis with expiration
-    await this.redisClient.setex(
-      `refresh_token:${payload.userId}`,
-      7 * 24 * 60 * 60,
-      refreshToken
-    );
-
-    return { accessToken, refreshToken };
-  }
-
-  async verifyAccessToken(token: string): Promise<TokenPayload> {
-    try {
-      const payload = jwt.verify(token, this.accessTokenSecret, {
-        issuer: 'shopping-platform',
-        audience: 'shopping-platform-users'
-      }) as TokenPayload;
-
-      // Check if token is blacklisted
-      const isBlacklisted = await this.redisClient.get(`blacklist:${token}`);
-      if (isBlacklisted) {
-        throw new Error('Token is blacklisted');
-      }
-
-      return payload;
-    } catch (error) {
-      throw new UnauthorizedError('Invalid access token');
+Request:
+{
+  "email": "user@example.com",
+  "password": "SecurePassword123!",
+  "profile": {
+    "firstName": "John",
+    "lastName": "Doe",
+    "phone": "+1234567890",
+    "address": {
+      "street": "123 Main St",
+      "city": "Anytown",
+      "state": "CA",
+      "zipCode": "12345",
+      "country": "US"
     }
   }
+}
 
-  async refreshAccessToken(refreshToken: string): Promise<TokenPair> {
-    try {
-      const payload = jwt.verify(refreshToken, this.refreshTokenSecret) as any;
-      
-      if (payload.type !== 'refresh') {
-        throw new Error('Invalid token type');
-      }
+Response (201):
+{
+  "userId": "123e4567-e89b-12d3-a456-426614174000",
+  "message": "User registered successfully"
+}
 
-      // Verify refresh token exists in Redis
-      const storedToken = await this.redisClient.get(`refresh_token:${payload.userId}`);
-      if (storedToken !== refreshToken) {
-        throw new Error('Invalid refresh token');
-      }
+# User Authentication
+POST /api/v1/auth/login
+Content-Type: application/json
 
-      // Generate new token pair
-      const userPayload = { userId: payload.userId }; // Get full user data
-      const newTokens = await this.generateTokenPair(userPayload);
+Request:
+{
+  "email": "user@example.com",
+  "password": "SecurePassword123!"
+}
 
-      // Invalidate old refresh token
-      await this.redisClient.del(`refresh_token:${payload.userId}`);
-
-      return newTokens;
-    } catch (error) {
-      throw new UnauthorizedError('Invalid refresh token');
-    }
-  }
-
-  async revokeToken(token: string, userId: string): Promise<void> {
-    // Add token to blacklist
-    const decoded = jwt.decode(token) as any;
-    const expiresIn = decoded.exp - Math.floor(Date.now() / 1000);
-    
-    if (expiresIn > 0) {
-      await this.redisClient.setex(`blacklist:${token}`, expiresIn, 'true');
-    }
-
-    // Remove refresh token
-    await this.redisClient.del(`refresh_token:${userId}`);
+Response (200):
+{
+  "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "userId": "123e4567-e89b-12d3-a456-426614174000",
+    "email": "user@example.com",
+    "profile": {
+      "firstName": "John",
+      "lastName": "Doe"
+    },
+    "roles": ["CONSUMER"]
   }
 }
 ```
 
-### Input Validation Middleware
-```typescript
-class ValidationMiddleware {
-  static validateRequest(schema: Joi.ObjectSchema) {
-    return (req: Request, res: Response, next: NextFunction) => {
-      const { error, value } = schema.validate(req.body, {
-        abortEarly: false,
-        stripUnknown: true
-      });
+#### Product Management APIs
 
-      if (error) {
-        const errors = error.details.map(detail => ({
+```yaml
+# Product Search
+GET /api/v1/products/search
+Authorization: Bearer {accessToken}
+
+Query Parameters:
+- q: string (search query)
+- category: string (category ID)
+- minPrice: number
+- maxPrice: number
+- sortBy: string (price, name, rating)
+- sortOrder: string (asc, desc)
+- page: number (default: 1)
+- limit: number (default: 20)
+
+Response (200):
+{
+  "products": [
+    {
+      "productId": "prod-123",
+      "name": "Wireless Headphones",
+      "description": "High-quality wireless headphones",
+      "price": 99.99,
+      "sku": "WH-001",
+      "inventory": 50,
+      "images": ["https://example.com/image1.jpg"],
+      "seller": {
+        "sellerId": "seller-123",
+        "name": "Electronics Store"
+      },
+      "category": {
+        "categoryId": "cat-123",
+        "name": "Electronics"
+      },
+      "rating": 4.5,
+      "reviewCount": 120
+    }
+  ],
+  "totalCount": 1500,
+  "page": 1,
+  "limit": 20,
+  "facets": {
+    "categories": [
+      {"id": "cat-123", "name": "Electronics", "count": 800},
+      {"id": "cat-124", "name": "Clothing", "count": 700}
+    ],
+    "priceRanges": [
+      {"range": "0-50", "count": 400},
+      {"range": "50-100", "count": 600},
+      {"range": "100-200", "count": 300},
+      {"range": "200+", "count": 200}
+    ]
+  }
+}
+
+# Get Product Details
+GET /api/v1/products/{productId}
+Authorization: Bearer {accessToken}
+
+Response (200):
+{
+  "productId": "prod-123",
+  "name": "Wireless Headphones",
+  "description": "High-quality wireless headphones with noise cancellation",
+  "price": 99.99,
+  "sku": "WH-001",
+  "inventory": 50,
+  "images": [
+    "https://example.com/image1.jpg",
+    "https://example.com/image2.jpg"
+  ],
+  "specifications": {
+    "brand": "AudioTech",
+    "model": "AT-WH-100",
+    "batteryLife": "30 hours",
+    "connectivity": "Bluetooth 5.0"
+  },
+  "seller": {
+    "sellerId": "seller-123",
+    "name": "Electronics Store",
+    "rating": 4.8
+  },
+  "category": {
+    "categoryId": "cat-123",
+    "name": "Electronics",
+    "breadcrumb": ["Electronics", "Audio", "Headphones"]
+  },
+  "reviews": {
+    "averageRating": 4.5,
+    "totalCount": 120,
+    "distribution": {
+      "5": 60,
+      "4": 40,
+      "3": 15,
+      "2": 3,
+      "1": 2
+    }
+  }
+}
+```
+
+#### Order Management APIs
+
+```yaml
+# Create Order
+POST /api/v1/orders
+Authorization: Bearer {accessToken}
+Content-Type: application/json
+
+Request:
+{
+  "shippingAddress": {
+    "street": "123 Main St",
+    "city": "Anytown",
+    "state": "CA",
+    "zipCode": "12345",
+    "country": "US"
+  },
+  "paymentMethodId": "pm-123"
+}
+
+Response (201):
+{
+  "orderId": "order-123",
+  "orderNumber": "ORD-2024-001234",
+  "totalAmount": 149.98,
+  "status": "PENDING",
+  "items": [
+    {
+      "productId": "prod-123",
+      "name": "Wireless Headphones",
+      "quantity": 1,
+      "unitPrice": 99.99,
+      "totalPrice": 99.99
+    },
+    {
+      "productId": "prod-124",
+      "name": "Phone Case",
+      "quantity": 2,
+      "unitPrice": 24.99,
+      "totalPrice": 49.98
+    }
+  ],
+  "estimatedDelivery": "2024-01-15T00:00:00Z"
+}
+
+# Get Order Details
+GET /api/v1/orders/{orderId}
+Authorization: Bearer {accessToken}
+
+Response (200):
+{
+  "orderId": "order-123",
+  "orderNumber": "ORD-2024-001234",
+  "status": "SHIPPED",
+  "totalAmount": 149.98,
+  "createdAt": "2024-01-10T10:00:00Z",
+  "updatedAt": "2024-01-12T14:30:00Z",
+  "items": [...],
+  "shippingAddress": {...},
+  "payment": {
+    "paymentId": "pay-123",
+    "status": "COMPLETED",
+    "method": "Credit Card",
+    "last4": "1234"
+  },
+  "tracking": {
+    "trackingNumber": "1Z999AA1234567890",
+    "carrier": "UPS",
+    "status": "In Transit",
+    "estimatedDelivery": "2024-01-15T00:00:00Z",
+    "trackingUrl": "https://ups.com/track/1Z999AA1234567890"
+  }
+}
+```
+
+### Security Implementation
+
+#### JWT Token Structure
+
+```typescript
+interface JWTPayload {
+  sub: string; // User ID
+  email: string;
+  roles: string[];
+  permissions: string[];
+  iat: number; // Issued at
+  exp: number; // Expiration
+  jti: string; // JWT ID for revocation
+}
+
+class JWTService {
+  private secretKey: string;
+  private algorithm = 'HS256';
+  
+  async generateAccessToken(user: User): Promise<string> {
+    const payload: JWTPayload = {
+      sub: user.userId,
+      email: user.email,
+      roles: user.roles.map(r => r.roleName),
+      permissions: this.flattenPermissions(user.roles),
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + (15 * 60), // 15 minutes
+      jti: generateUUID()
+    };
+    
+    return jwt.sign(payload, this.secretKey, { algorithm: this.algorithm });
+  }
+  
+  async generateRefreshToken(user: User): Promise<string> {
+    const payload = {
+      sub: user.userId,
+      type: 'refresh',
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60), // 7 days
+      jti: generateUUID()
+    };
+    
+    return jwt.sign(payload, this.secretKey, { algorithm: this.algorithm });
+  }
+}
+```
+
+#### Encryption Service
+
+```typescript
+class EncryptionService {
+  private algorithm = 'aes-256-gcm';
+  private keyDerivationSalt: Buffer;
+  
+  constructor(private masterKey: string) {
+    this.keyDerivationSalt = crypto.randomBytes(32);
+  }
+  
+  encrypt(plaintext: string): string {
+    const iv = crypto.randomBytes(16);
+    const key = crypto.pbkdf2Sync(this.masterKey, this.keyDerivationSalt, 100000, 32, 'sha256');
+    
+    const cipher = crypto.createCipher(this.algorithm, key);
+    cipher.setAAD(Buffer.from('additional-data'));
+    
+    let encrypted = cipher.update(plaintext, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    const authTag = cipher.getAuthTag();
+    
+    return JSON.stringify({
+      iv: iv.toString('hex'),
+      encrypted,
+      authTag: authTag.toString('hex'),
+      salt: this.keyDerivationSalt.toString('hex')
+    });
+  }
+  
+  decrypt(encryptedData: string): string {
+    const data = JSON.parse(encryptedData);
+    const key = crypto.pbkdf2Sync(
+      this.masterKey, 
+      Buffer.from(data.salt, 'hex'), 
+      100000, 
+      32, 
+      'sha256'
+    );
+    
+    const decipher = crypto.createDecipher(this.algorithm, key);
+    decipher.setAuthTag(Buffer.from(data.authTag, 'hex'));
+    decipher.setAAD(Buffer.from('additional-data'));
+    
+    let decrypted = decipher.update(data.encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return decrypted;
+  }
+}
+```
+
+#### Input Validation
+
+```typescript
+import Joi from 'joi';
+
+class ValidationService {
+  private schemas = {
+    userRegistration: Joi.object({
+      email: Joi.string().email().required(),
+      password: Joi.string()
+        .min(8)
+        .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/) // Strong password
+        .required(),
+      profile: Joi.object({
+        firstName: Joi.string().min(1).max(100).required(),
+        lastName: Joi.string().min(1).max(100).required(),
+        phone: Joi.string().pattern(/^\+?[1-9]\d{1,14}$/), // E.164 format
+        address: Joi.object({
+          street: Joi.string().required(),
+          city: Joi.string().required(),
+          state: Joi.string().required(),
+          zipCode: Joi.string().required(),
+          country: Joi.string().length(2).required() // ISO country code
+        })
+      }).required()
+    }),
+    
+    productSearch: Joi.object({
+      q: Joi.string().max(200),
+      category: Joi.string().uuid(),
+      minPrice: Joi.number().min(0),
+      maxPrice: Joi.number().min(0),
+      sortBy: Joi.string().valid('price', 'name', 'rating', 'created'),
+      sortOrder: Joi.string().valid('asc', 'desc'),
+      page: Joi.number().integer().min(1).max(1000),
+      limit: Joi.number().integer().min(1).max(100)
+    }),
+    
+    createOrder: Joi.object({
+      shippingAddress: Joi.object({
+        street: Joi.string().required(),
+        city: Joi.string().required(),
+        state: Joi.string().required(),
+        zipCode: Joi.string().required(),
+        country: Joi.string().length(2).required()
+      }).required(),
+      paymentMethodId: Joi.string().uuid().required()
+    })
+  };
+  
+  validate(data: any, schemaName: keyof typeof this.schemas): ValidationResult {
+    const schema = this.schemas[schemaName];
+    const { error, value } = schema.validate(data, { abortEarly: false });
+    
+    if (error) {
+      return {
+        valid: false,
+        errors: error.details.map(detail => ({
           field: detail.path.join('.'),
           message: detail.message
-        }));
-
-        return res.status(400).json({
-          success: false,
-          message: 'Validation failed',
-          errors
-        });
-      }
-
-      req.body = value;
-      next();
-    };
-  }
-
-  static sanitizeInput(req: Request, res: Response, next: NextFunction) {
-    // Sanitize string inputs
-    const sanitizeObject = (obj: any): any => {
-      if (typeof obj === 'string') {
-        return validator.escape(obj.trim());
-      }
-      if (Array.isArray(obj)) {
-        return obj.map(sanitizeObject);
-      }
-      if (obj && typeof obj === 'object') {
-        const sanitized: any = {};
-        for (const [key, value] of Object.entries(obj)) {
-          sanitized[key] = sanitizeObject(value);
-        }
-        return sanitized;
-      }
-      return obj;
-    };
-
-    req.body = sanitizeObject(req.body);
-    req.query = sanitizeObject(req.query);
-    req.params = sanitizeObject(req.params);
-
-    next();
-  }
-}
-```
-
-### Rate Limiting Implementation
-```typescript
-class RateLimitService {
-  private redisClient: Redis;
-
-  constructor(redisClient: Redis) {
-    this.redisClient = redisClient;
-  }
-
-  async checkRateLimit(
-    identifier: string,
-    windowMs: number,
-    maxRequests: number
-  ): Promise<RateLimitResult> {
-    const key = `rate_limit:${identifier}`;
-    const now = Date.now();
-    const windowStart = now - windowMs;
-
-    // Use sliding window log algorithm
-    const pipeline = this.redisClient.pipeline();
-    
-    // Remove expired entries
-    pipeline.zremrangebyscore(key, 0, windowStart);
-    
-    // Count current requests
-    pipeline.zcard(key);
-    
-    // Add current request
-    pipeline.zadd(key, now, `${now}-${Math.random()}`);
-    
-    // Set expiration
-    pipeline.expire(key, Math.ceil(windowMs / 1000));
-
-    const results = await pipeline.exec();
-    const currentRequests = results![1][1] as number;
-
-    if (currentRequests >= maxRequests) {
-      const oldestRequest = await this.redisClient.zrange(key, 0, 0, 'WITHSCORES');
-      const resetTime = oldestRequest.length > 0 
-        ? parseInt(oldestRequest[1]) + windowMs 
-        : now + windowMs;
-
-      return {
-        allowed: false,
-        remaining: 0,
-        resetTime,
-        retryAfter: Math.ceil((resetTime - now) / 1000)
+        }))
       };
     }
-
-    return {
-      allowed: true,
-      remaining: maxRequests - currentRequests - 1,
-      resetTime: now + windowMs,
-      retryAfter: 0
-    };
-  }
-
-  createMiddleware(windowMs: number, maxRequests: number) {
-    return async (req: Request, res: Response, next: NextFunction) => {
-      const identifier = req.ip || req.connection.remoteAddress || 'unknown';
-      
-      try {
-        const result = await this.checkRateLimit(identifier, windowMs, maxRequests);
-        
-        // Set rate limit headers
-        res.set({
-          'X-RateLimit-Limit': maxRequests.toString(),
-          'X-RateLimit-Remaining': result.remaining.toString(),
-          'X-RateLimit-Reset': new Date(result.resetTime).toISOString()
-        });
-
-        if (!result.allowed) {
-          res.set('Retry-After', result.retryAfter.toString());
-          return res.status(429).json({
-            success: false,
-            message: 'Too many requests',
-            retryAfter: result.retryAfter
-          });
-        }
-
-        next();
-      } catch (error) {
-        console.error('Rate limiting error:', error);
-        // Fail open - allow request if rate limiting fails
-        next();
-      }
-    };
-  }
-}
-```
-
-## Data Flow Specifications
-
-### Event-Driven Architecture
-```typescript
-// Event Types
-interface DomainEvent {
-  eventId: string;
-  eventType: string;
-  aggregateId: string;
-  aggregateType: string;
-  eventData: any;
-  timestamp: Date;
-  version: number;
-}
-
-interface UserRegisteredEvent extends DomainEvent {
-  eventType: 'USER_REGISTERED';
-  eventData: {
-    userId: string;
-    email: string;
-    role: UserRole;
-  };
-}
-
-interface OrderCreatedEvent extends DomainEvent {
-  eventType: 'ORDER_CREATED';
-  eventData: {
-    orderId: string;
-    userId: string;
-    items: OrderItem[];
-    totalAmount: number;
-  };
-}
-
-interface PaymentCompletedEvent extends DomainEvent {
-  eventType: 'PAYMENT_COMPLETED';
-  eventData: {
-    paymentId: string;
-    orderId: string;
-    amount: number;
-    method: PaymentMethod;
-  };
-}
-
-// Event Bus Implementation
-class EventBus {
-  private messageQueue: MessageQueue;
-  private eventStore: EventStore;
-  private handlers: Map<string, EventHandler[]>;
-
-  constructor(messageQueue: MessageQueue, eventStore: EventStore) {
-    this.messageQueue = messageQueue;
-    this.eventStore = eventStore;
-    this.handlers = new Map();
-  }
-
-  async publish(event: DomainEvent): Promise<void> {
-    try {
-      // Store event
-      await this.eventStore.save(event);
-      
-      // Publish to message queue
-      await this.messageQueue.publish('domain_events', event);
-      
-      console.log(`Event published: ${event.eventType}`, event.eventId);
-    } catch (error) {
-      console.error('Failed to publish event:', error);
-      throw error;
-    }
-  }
-
-  subscribe(eventType: string, handler: EventHandler): void {
-    if (!this.handlers.has(eventType)) {
-      this.handlers.set(eventType, []);
-    }
-    this.handlers.get(eventType)!.push(handler);
-  }
-
-  async startListening(): Promise<void> {
-    await this.messageQueue.subscribe('domain_events', async (event: DomainEvent) => {
-      const handlers = this.handlers.get(event.eventType) || [];
-      
-      await Promise.all(
-        handlers.map(handler => this.executeHandler(handler, event))
-      );
-    });
-  }
-
-  private async executeHandler(handler: EventHandler, event: DomainEvent): Promise<void> {
-    try {
-      await handler.handle(event);
-    } catch (error) {
-      console.error(`Handler failed for event ${event.eventType}:`, error);
-      // Implement retry logic or dead letter queue
-    }
-  }
-}
-
-// Event Handlers
-class OrderEventHandler implements EventHandler {
-  private inventoryService: InventoryService;
-  private notificationService: NotificationService;
-
-  async handle(event: DomainEvent): Promise<void> {
-    switch (event.eventType) {
-      case 'ORDER_CREATED':
-        await this.handleOrderCreated(event as OrderCreatedEvent);
-        break;
-      case 'PAYMENT_COMPLETED':
-        await this.handlePaymentCompleted(event as PaymentCompletedEvent);
-        break;
-    }
-  }
-
-  private async handleOrderCreated(event: OrderCreatedEvent): Promise<void> {
-    const { orderId, userId, items } = event.eventData;
     
-    // Reserve inventory
-    for (const item of items) {
-      await this.inventoryService.reserveInventory(
-        item.productId,
-        item.quantity,
-        orderId
-      );
-    }
-    
-    // Send order confirmation notification
-    await this.notificationService.sendOrderConfirmation(userId, orderId);
-  }
-
-  private async handlePaymentCompleted(event: PaymentCompletedEvent): Promise<void> {
-    const { orderId, amount } = event.eventData;
-    
-    // Update order status
-    await this.orderService.updateOrderStatus(orderId, OrderStatus.CONFIRMED);
-    
-    // Commit inventory reservation
-    await this.inventoryService.commitReservation(orderId);
-  }
-}
-```
-
-### Saga Pattern Implementation
-```typescript
-// Order Processing Saga
-class OrderProcessingSaga {
-  private eventBus: EventBus;
-  private orderService: OrderService;
-  private paymentService: PaymentService;
-  private inventoryService: InventoryService;
-  private notificationService: NotificationService;
-
-  async handleOrderCreated(event: OrderCreatedEvent): Promise<void> {
-    const sagaId = `order_saga_${event.eventData.orderId}`;
-    
-    try {
-      // Step 1: Validate inventory
-      const inventoryValid = await this.validateInventory(event.eventData.items);
-      if (!inventoryValid) {
-        await this.cancelOrder(event.eventData.orderId, 'Insufficient inventory');
-        return;
-      }
-
-      // Step 2: Reserve inventory
-      await this.reserveInventory(event.eventData.orderId, event.eventData.items);
-
-      // Step 3: Process payment
-      const paymentResult = await this.processPayment(event.eventData);
-      if (!paymentResult.success) {
-        await this.compensateInventoryReservation(event.eventData.orderId);
-        await this.cancelOrder(event.eventData.orderId, 'Payment failed');
-        return;
-      }
-
-      // Step 4: Confirm order
-      await this.confirmOrder(event.eventData.orderId);
-      
-      // Step 5: Send notifications
-      await this.sendConfirmationNotifications(event.eventData);
-      
-    } catch (error) {
-      console.error(`Saga ${sagaId} failed:`, error);
-      await this.compensateTransaction(event.eventData.orderId);
-    }
-  }
-
-  private async validateInventory(items: OrderItem[]): Promise<boolean> {
-    for (const item of items) {
-      const available = await this.inventoryService.checkAvailability(
-        item.productId,
-        item.quantity
-      );
-      if (!available) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  private async reserveInventory(orderId: string, items: OrderItem[]): Promise<void> {
-    const reservations = await Promise.all(
-      items.map(item => 
-        this.inventoryService.reserveInventory(
-          item.productId,
-          item.quantity,
-          orderId
-        )
-      )
-    );
-
-    // Store reservation IDs for compensation
-    await this.storeSagaState(orderId, { reservations });
-  }
-
-  private async compensateInventoryReservation(orderId: string): Promise<void> {
-    const sagaState = await this.getSagaState(orderId);
-    if (sagaState.reservations) {
-      await Promise.all(
-        sagaState.reservations.map((reservationId: string) =>
-          this.inventoryService.cancelReservation(reservationId)
-        )
-      );
-    }
-  }
-
-  private async compensateTransaction(orderId: string): Promise<void> {
-    // Rollback all changes
-    await this.compensateInventoryReservation(orderId);
-    await this.refundPayment(orderId);
-    await this.cancelOrder(orderId, 'Transaction failed');
-  }
-}
-```
-
-## Error Handling Implementation
-
-### Global Error Handler
-```typescript
-class GlobalErrorHandler {
-  private logger: Logger;
-  private notificationService: NotificationService;
-
-  constructor(logger: Logger, notificationService: NotificationService) {
-    this.logger = logger;
-    this.notificationService = notificationService;
-  }
-
-  handleError(error: Error, req: Request, res: Response, next: NextFunction): void {
-    // Log error with context
-    this.logger.error('Unhandled error', {
-      error: error.message,
-      stack: error.stack,
-      url: req.url,
-      method: req.method,
-      userId: req.user?.userId,
-      timestamp: new Date().toISOString()
-    });
-
-    // Determine error type and response
-    if (error instanceof ValidationError) {
-      res.status(400).json({
-        success: false,
-        message: error.message,
-        type: 'VALIDATION_ERROR'
-      });
-    } else if (error instanceof UnauthorizedError) {
-      res.status(401).json({
-        success: false,
-        message: 'Unauthorized',
-        type: 'UNAUTHORIZED'
-      });
-    } else if (error instanceof ForbiddenError) {
-      res.status(403).json({
-        success: false,
-        message: 'Forbidden',
-        type: 'FORBIDDEN'
-      });
-    } else if (error instanceof NotFoundError) {
-      res.status(404).json({
-        success: false,
-        message: 'Resource not found',
-        type: 'NOT_FOUND'
-      });
-    } else if (error instanceof ConflictError) {
-      res.status(409).json({
-        success: false,
-        message: error.message,
-        type: 'CONFLICT'
-      });
-    } else {
-      // Internal server error
-      res.status(500).json({
-        success: false,
-        message: 'Internal server error',
-        type: 'INTERNAL_ERROR',
-        errorId: this.generateErrorId()
-      });
-
-      // Alert for critical errors
-      if (this.isCriticalError(error)) {
-        this.notificationService.alertOpsTeam(error, req);
-      }
-    }
-  }
-
-  private isCriticalError(error: Error): boolean {
-    return (
-      error.message.includes('database') ||
-      error.message.includes('payment') ||
-      error.message.includes('security')
-    );
-  }
-
-  private generateErrorId(): string {
-    return `ERR_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  }
-}
-```
-
-### Circuit Breaker Implementation
-```typescript
-class CircuitBreaker {
-  private failureCount: number = 0;
-  private lastFailureTime: number = 0;
-  private state: CircuitState = CircuitState.CLOSED;
-  private successCount: number = 0;
-
-  constructor(
-    private failureThreshold: number = 5,
-    private recoveryTimeout: number = 60000, // 1 minute
-    private monitoringPeriod: number = 10000 // 10 seconds
-  ) {}
-
-  async execute<T>(operation: () => Promise<T>): Promise<T> {
-    if (this.state === CircuitState.OPEN) {
-      if (Date.now() - this.lastFailureTime > this.recoveryTimeout) {
-        this.state = CircuitState.HALF_OPEN;
-        this.successCount = 0;
-      } else {
-        throw new ServiceUnavailableError('Circuit breaker is open');
-      }
-    }
-
-    try {
-      const result = await operation();
-      this.onSuccess();
-      return result;
-    } catch (error) {
-      this.onFailure();
-      throw error;
-    }
-  }
-
-  private onSuccess(): void {
-    this.failureCount = 0;
-    
-    if (this.state === CircuitState.HALF_OPEN) {
-      this.successCount++;
-      if (this.successCount >= 3) {
-        this.state = CircuitState.CLOSED;
-      }
-    }
-  }
-
-  private onFailure(): void {
-    this.failureCount++;
-    this.lastFailureTime = Date.now();
-    
-    if (this.failureCount >= this.failureThreshold) {
-      this.state = CircuitState.OPEN;
-    }
-  }
-
-  getState(): CircuitState {
-    return this.state;
-  }
-}
-
-enum CircuitState {
-  CLOSED = 'closed',
-  OPEN = 'open',
-  HALF_OPEN = 'half_open'
-}
-```
-
-## Performance Optimization Details
-
-### Caching Strategy Implementation
-```typescript
-class CacheService {
-  private redisClient: Redis;
-  private localCache: NodeCache;
-
-  constructor(redisClient: Redis) {
-    this.redisClient = redisClient;
-    this.localCache = new NodeCache({ stdTTL: 300 }); // 5 minutes
-  }
-
-  async get<T>(key: string): Promise<T | null> {
-    // Check local cache first (L1)
-    const localValue = this.localCache.get<T>(key);
-    if (localValue !== undefined) {
-      return localValue;
-    }
-
-    // Check Redis cache (L2)
-    const redisValue = await this.redisClient.get(key);
-    if (redisValue) {
-      const parsed = JSON.parse(redisValue);
-      // Store in local cache
-      this.localCache.set(key, parsed);
-      return parsed;
-    }
-
-    return null;
-  }
-
-  async set(key: string, value: any, ttl: number = 300): Promise<void> {
-    // Store in both caches
-    this.localCache.set(key, value, ttl);
-    await this.redisClient.setex(key, ttl, JSON.stringify(value));
-  }
-
-  async invalidate(pattern: string): Promise<void> {
-    // Invalidate local cache
-    const keys = this.localCache.keys();
-    keys.forEach(key => {
-      if (key.match(pattern)) {
-        this.localCache.del(key);
-      }
-    });
-
-    // Invalidate Redis cache
-    const redisKeys = await this.redisClient.keys(pattern);
-    if (redisKeys.length > 0) {
-      await this.redisClient.del(...redisKeys);
-    }
-  }
-
-  // Cache-aside pattern
-  async getOrSet<T>(
-    key: string,
-    fetcher: () => Promise<T>,
-    ttl: number = 300
-  ): Promise<T> {
-    const cached = await this.get<T>(key);
-    if (cached !== null) {
-      return cached;
-    }
-
-    const value = await fetcher();
-    await this.set(key, value, ttl);
-    return value;
-  }
-}
-```
-
-### Database Query Optimization
-```typescript
-class OptimizedProductRepository {
-  private db: Database;
-  private cacheService: CacheService;
-
-  async searchProducts(params: ProductSearchParams): Promise<ProductSearchResult> {
-    const cacheKey = `product_search:${this.hashParams(params)}`;
-    
-    return await this.cacheService.getOrSet(
-      cacheKey,
-      () => this.executeSearch(params),
-      300 // 5 minutes
-    );
-  }
-
-  private async executeSearch(params: ProductSearchParams): Promise<ProductSearchResult> {
-    let query = this.db
-      .select([
-        'p.product_id',
-        'p.name',
-        'p.price',
-        'p.inventory',
-        'c.name as category_name',
-        'pi.url as primary_image'
-      ])
-      .from('products as p')
-      .leftJoin('categories as c', 'p.category_id', 'c.category_id')
-      .leftJoin(
-        this.db.raw(`(
-          SELECT DISTINCT ON (product_id) product_id, url 
-          FROM product_images 
-          WHERE is_primary = true
-        ) as pi`),
-        'p.product_id',
-        'pi.product_id'
-      )
-      .where('p.status', 'active');
-
-    // Apply filters
-    if (params.query) {
-      query = query.whereRaw(
-        "to_tsvector('english', p.name || ' ' || p.description) @@ plainto_tsquery('english', ?)",
-        [params.query]
-      );
-    }
-
-    if (params.categoryId) {
-      query = query.where('p.category_id', params.categoryId);
-    }
-
-    if (params.minPrice) {
-      query = query.where('p.price', '>=', params.minPrice);
-    }
-
-    if (params.maxPrice) {
-      query = query.where('p.price', '<=', params.maxPrice);
-    }
-
-    // Apply sorting
-    switch (params.sortBy) {
-      case 'price_asc':
-        query = query.orderBy('p.price', 'asc');
-        break;
-      case 'price_desc':
-        query = query.orderBy('p.price', 'desc');
-        break;
-      case 'name_asc':
-        query = query.orderBy('p.name', 'asc');
-        break;
-      default:
-        query = query.orderBy('p.created_at', 'desc');
-    }
-
-    // Apply pagination
-    const offset = (params.page - 1) * params.limit;
-    query = query.limit(params.limit).offset(offset);
-
-    const [products, totalCount] = await Promise.all([
-      query,
-      this.getSearchCount(params)
-    ]);
-
-    return {
-      products,
-      pagination: {
-        page: params.page,
-        limit: params.limit,
-        total: totalCount,
-        pages: Math.ceil(totalCount / params.limit)
-      }
-    };
-  }
-
-  private async getSearchCount(params: ProductSearchParams): Promise<number> {
-    const cacheKey = `product_search_count:${this.hashParams(params)}`;
-    
-    return await this.cacheService.getOrSet(
-      cacheKey,
-      async () => {
-        let query = this.db('products as p')
-          .count('* as count')
-          .where('status', 'active');
-
-        // Apply same filters as search
-        if (params.query) {
-          query = query.whereRaw(
-            "to_tsvector('english', name || ' ' || description) @@ plainto_tsquery('english', ?)",
-            [params.query]
-          );
-        }
-
-        if (params.categoryId) {
-          query = query.where('category_id', params.categoryId);
-        }
-
-        if (params.minPrice) {
-          query = query.where('price', '>=', params.minPrice);
-        }
-
-        if (params.maxPrice) {
-          query = query.where('price', '<=', params.maxPrice);
-        }
-
-        const result = await query.first();
-        return parseInt(result.count);
-      },
-      600 // 10 minutes
-    );
-  }
-
-  private hashParams(params: any): string {
-    return crypto
-      .createHash('md5')
-      .update(JSON.stringify(params))
-      .digest('hex');
+    return { valid: true, data: value };
   }
 }
 ```
@@ -1838,45 +1352,31 @@ class OptimizedProductRepository {
 ## Deployment Architecture
 
 ### Docker Configuration
+
 ```dockerfile
-# User Service Dockerfile
+# Multi-stage build for Node.js services
 FROM node:18-alpine AS builder
 
 WORKDIR /app
-
-# Copy package files
 COPY package*.json ./
-COPY tsconfig.json ./
-
-# Install dependencies
 RUN npm ci --only=production
 
-# Copy source code
-COPY src/ ./src/
-
-# Build application
+COPY . .
 RUN npm run build
 
 # Production stage
 FROM node:18-alpine AS production
 
+RUN addgroup -g 1001 -S nodejs
+RUN adduser -S nextjs -u 1001
+
 WORKDIR /app
 
-# Create non-root user
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
+COPY --from=builder --chown=nextjs:nodejs /app/dist ./dist
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
 
-# Copy built application
-COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
-COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
-COPY --from=builder --chown=nodejs:nodejs /app/package.json ./
-
-# Switch to non-root user
-USER nodejs
-
-# Health check
-HEALTHCHEK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node dist/health-check.js
+USER nextjs
 
 EXPOSE 3000
 
@@ -1884,8 +1384,8 @@ CMD ["node", "dist/index.js"]
 ```
 
 ### Kubernetes Deployment
+
 ```yaml
-# user-service-deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -1908,8 +1408,6 @@ spec:
         ports:
         - containerPort: 3000
         env:
-        - name: NODE_ENV
-          value: "production"
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef:
@@ -1920,11 +1418,6 @@ spec:
             secretKeyRef:
               name: jwt-secret
               key: secret
-        - name: REDIS_URL
-          valueFrom:
-            configMapKeyRef:
-              name: redis-config
-              key: url
         resources:
           requests:
             memory: "256Mi"
@@ -1944,11 +1437,6 @@ spec:
             port: 3000
           initialDelaySeconds: 5
           periodSeconds: 5
-        securityContext:
-          runAsNonRoot: true
-          runAsUser: 1001
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
 ---
 apiVersion: v1
 kind: Service
@@ -1961,95 +1449,40 @@ spec:
   - port: 80
     targetPort: 3000
   type: ClusterIP
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: user-service-hpa
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: user-service
-  minReplicas: 3
-  maxReplicas: 10
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 70
-  - type: Resource
-    resource:
-      name: memory
-      target:
-        type: Utilization
-        averageUtilization: 80
 ```
 
 ### Infrastructure as Code (Terraform)
+
 ```hcl
-# main.tf
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
-
-provider "aws" {
-  region = var.aws_region
-}
-
-# VPC Configuration
-resource "aws_vpc" "main" {
-  cidr_block           = "10.0.0.0/16"
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-
-  tags = {
-    Name = "shopping-platform-vpc"
-  }
-}
-
-# EKS Cluster
-resource "aws_eks_cluster" "main" {
+# AWS EKS Cluster
+resource "aws_eks_cluster" "shopping_platform" {
   name     = "shopping-platform"
-  role_arn = aws_iam_role.eks_cluster.arn
+  role_arn = aws_iam_role.cluster.arn
   version  = "1.27"
 
   vpc_config {
-    subnet_ids = [
-      aws_subnet.private_1.id,
-      aws_subnet.private_2.id,
-      aws_subnet.public_1.id,
-      aws_subnet.public_2.id
-    ]
-    
+    subnet_ids = aws_subnet.private[*].id
     endpoint_private_access = true
     endpoint_public_access  = true
   }
 
   depends_on = [
-    aws_iam_role_policy_attachment.eks_cluster_policy
+    aws_iam_role_policy_attachment.cluster_AmazonEKSClusterPolicy,
   ]
 }
 
-# RDS Database
+# RDS PostgreSQL Database
 resource "aws_db_instance" "main" {
   identifier = "shopping-platform-db"
   
   engine         = "postgres"
   engine_version = "15.3"
-  instance_class = "db.r6g.large"
+  instance_class = "db.r6g.xlarge"
   
   allocated_storage     = 100
   max_allocated_storage = 1000
-  storage_type          = "gp3"
-  storage_encrypted     = true
+  storage_type         = "gp3"
+  storage_encrypted    = true
   
   db_name  = "shopping_platform"
   username = var.db_username
@@ -2065,22 +1498,13 @@ resource "aws_db_instance" "main" {
   skip_final_snapshot = false
   final_snapshot_identifier = "shopping-platform-final-snapshot"
   
-  performance_insights_enabled = true
-  monitoring_interval         = 60
-  monitoring_role_arn        = aws_iam_role.rds_monitoring.arn
-  
   tags = {
-    Name = "shopping-platform-db"
+    Name = "Shopping Platform Database"
   }
 }
 
-# ElastiCache Redis
-resource "aws_elasticache_subnet_group" "main" {
-  name       = "shopping-platform-cache-subnet"
-  subnet_ids = [aws_subnet.private_1.id, aws_subnet.private_2.id]
-}
-
-resource "aws_elasticache_replication_group" "main" {
+# ElastiCache Redis Cluster
+resource "aws_elasticache_replication_group" "redis" {
   replication_group_id       = "shopping-platform-redis"
   description                = "Redis cluster for shopping platform"
   
@@ -2099,395 +1523,78 @@ resource "aws_elasticache_replication_group" "main" {
   transit_encryption_enabled = true
   
   tags = {
-    Name = "shopping-platform-redis"
+    Name = "Shopping Platform Redis"
+  }
+}
+
+# Application Load Balancer
+resource "aws_lb" "main" {
+  name               = "shopping-platform-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb.id]
+  subnets            = aws_subnet.public[*].id
+
+  enable_deletion_protection = true
+
+  tags = {
+    Name = "Shopping Platform ALB"
   }
 }
 ```
 
-## Monitoring and Observability
+### Monitoring and Observability
 
-### Application Metrics
-```typescript
-class MetricsService {
-  private prometheusRegister: Registry;
-  private httpRequestDuration: Histogram<string>;
-  private httpRequestTotal: Counter<string>;
-  private activeConnections: Gauge<string>;
-  private businessMetrics: Map<string, Counter<string>>;
-
-  constructor() {
-    this.prometheusRegister = new Registry();
-    this.setupMetrics();
-  }
-
-  private setupMetrics(): void {
-    // HTTP metrics
-    this.httpRequestDuration = new Histogram({
-      name: 'http_request_duration_seconds',
-      help: 'Duration of HTTP requests in seconds',
-      labelNames: ['method', 'route', 'status_code'],
-      buckets: [0.1, 0.3, 0.5, 0.7, 1, 3, 5, 7, 10]
-    });
-
-    this.httpRequestTotal = new Counter({
-      name: 'http_requests_total',
-      help: 'Total number of HTTP requests',
-      labelNames: ['method', 'route', 'status_code']
-    });
-
-    this.activeConnections = new Gauge({
-      name: 'active_connections',
-      help: 'Number of active connections'
-    });
-
-    // Business metrics
-    this.businessMetrics = new Map([
-      ['user_registrations', new Counter({
-        name: 'user_registrations_total',
-        help: 'Total number of user registrations',
-        labelNames: ['role']
-      })],
-      ['orders_created', new Counter({
-        name: 'orders_created_total',
-        help: 'Total number of orders created',
-        labelNames: ['status']
-      })],
-      ['payments_processed', new Counter({
-        name: 'payments_processed_total',
-        help: 'Total number of payments processed',
-        labelNames: ['method', 'status']
-      })]
-    ]);
-
-    // Register all metrics
-    this.prometheusRegister.registerMetric(this.httpRequestDuration);
-    this.prometheusRegister.registerMetric(this.httpRequestTotal);
-    this.prometheusRegister.registerMetric(this.activeConnections);
+```yaml
+# Prometheus Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
     
-    this.businessMetrics.forEach(metric => {
-      this.prometheusRegister.registerMetric(metric);
-    });
-  }
-
-  recordHttpRequest(method: string, route: string, statusCode: number, duration: number): void {
-    this.httpRequestDuration
-      .labels(method, route, statusCode.toString())
-      .observe(duration);
+    rule_files:
+      - "alert_rules.yml"
     
-    this.httpRequestTotal
-      .labels(method, route, statusCode.toString())
-      .inc();
-  }
-
-  recordBusinessEvent(eventType: string, labels: Record<string, string> = {}): void {
-    const metric = this.businessMetrics.get(eventType);
-    if (metric) {
-      metric.labels(labels).inc();
-    }
-  }
-
-  getMetrics(): string {
-    return this.prometheusRegister.metrics();
-  }
-}
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets:
+              - alertmanager:9093
+    
+    scrape_configs:
+      - job_name: 'kubernetes-apiservers'
+        kubernetes_sd_configs:
+        - role: endpoints
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+          action: keep
+          regex: default;kubernetes;https
+      
+      - job_name: 'shopping-platform-services'
+        kubernetes_sd_configs:
+        - role: pod
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          action: replace
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+          target_label: __address__
 ```
 
-### Logging Configuration
-```typescript
-class LoggingService {
-  private logger: winston.Logger;
-
-  constructor() {
-    this.logger = winston.createLogger({
-      level: process.env.LOG_LEVEL || 'info',
-      format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.errors({ stack: true }),
-        winston.format.json()
-      ),
-      defaultMeta: {
-        service: process.env.SERVICE_NAME || 'shopping-platform',
-        version: process.env.SERVICE_VERSION || '1.0.0'
-      },
-      transports: [
-        new winston.transports.Console({
-          format: winston.format.combine(
-            winston.format.colorize(),
-            winston.format.simple()
-          )
-        }),
-        new winston.transports.File({
-          filename: 'logs/error.log',
-          level: 'error'
-        }),
-        new winston.transports.File({
-          filename: 'logs/combined.log'
-        })
-      ]
-    });
-
-    // Add ELK stack transport in production
-    if (process.env.NODE_ENV === 'production') {
-      this.logger.add(new winston.transports.Http({
-        host: process.env.LOGSTASH_HOST,
-        port: parseInt(process.env.LOGSTASH_PORT || '5000'),
-        path: '/logs'
-      }));
-    }
-  }
-
-  info(message: string, meta?: any): void {
-    this.logger.info(message, meta);
-  }
-
-  error(message: string, error?: Error, meta?: any): void {
-    this.logger.error(message, {
-      error: error?.message,
-      stack: error?.stack,
-      ...meta
-    });
-  }
-
-  warn(message: string, meta?: any): void {
-    this.logger.warn(message, meta);
-  }
-
-  debug(message: string, meta?: any): void {
-    this.logger.debug(message, meta);
-  }
-}
-```
-
-## Testing Strategy
-
-### Unit Testing
-```typescript
-// User Service Unit Tests
-describe('UserService', () => {
-  let userService: UserService;
-  let mockUserRepository: jest.Mocked<UserRepository>;
-  let mockPasswordService: jest.Mocked<PasswordService>;
-  let mockAuditService: jest.Mocked<AuditService>;
-
-  beforeEach(() => {
-    mockUserRepository = {
-      findByEmail: jest.fn(),
-      create: jest.fn(),
-      updateLastLogin: jest.fn()
-    } as any;
-
-    mockPasswordService = {
-      hash: jest.fn(),
-      verify: jest.fn()
-    } as any;
-
-    mockAuditService = {
-      logUserRegistration: jest.fn(),
-      logFailedLogin: jest.fn()
-    } as any;
-
-    userService = new UserService(
-      mockUserRepository,
-      mockPasswordService,
-      mockAuditService
-    );
-  });
-
-  describe('registerUser', () => {
-    it('should successfully register a new user', async () => {
-      // Arrange
-      const userData = {
-        email: 'test@example.com',
-        password: 'SecurePass123!',
-        firstName: 'John',
-        lastName: 'Doe'
-      };
-
-      mockUserRepository.findByEmail.mockResolvedValue(null);
-      mockPasswordService.hash.mockResolvedValue('hashedPassword');
-      mockUserRepository.create.mockResolvedValue({
-        userId: 'user-123',
-        ...userData,
-        passwordHash: 'hashedPassword'
-      } as User);
-
-      // Act
-      const result = await userService.registerUser(userData);
-
-      // Assert
-      expect(result.success).toBe(true);
-      expect(result.userId).toBe('user-123');
-      expect(mockPasswordService.hash).toHaveBeenCalledWith('SecurePass123!');
-      expect(mockAuditService.logUserRegistration).toHaveBeenCalled();
-    });
-
-    it('should throw error when email already exists', async () => {
-      // Arrange
-      const userData = {
-        email: 'existing@example.com',
-        password: 'SecurePass123!',
-        firstName: 'John',
-        lastName: 'Doe'
-      };
-
-      mockUserRepository.findByEmail.mockResolvedValue({
-        userId: 'existing-user',
-        email: 'existing@example.com'
-      } as User);
-
-      // Act & Assert
-      await expect(userService.registerUser(userData))
-        .rejects
-        .toThrow('Email already exists');
-    });
-  });
-});
-```
-
-### Integration Testing
-```typescript
-// Order Service Integration Tests
-describe('Order Service Integration', () => {
-  let app: Application;
-  let testDb: TestDatabase;
-  let testUser: User;
-  let testProduct: Product;
-
-  beforeAll(async () => {
-    app = await createTestApp();
-    testDb = new TestDatabase();
-    await testDb.setup();
-  });
-
-  beforeEach(async () => {
-    await testDb.clean();
-    testUser = await testDb.createUser({
-      email: 'test@example.com',
-      role: UserRole.CONSUMER
-    });
-    testProduct = await testDb.createProduct({
-      name: 'Test Product',
-      price: 99.99,
-      inventory: 10
-    });
-  });
-
-  afterAll(async () => {
-    await testDb.teardown();
-  });
-
-  describe('POST /orders', () => {
-    it('should create order successfully', async () => {
-      // Arrange
-      const orderData = {
-        items: [{
-          productId: testProduct.productId,
-          quantity: 2
-        }],
-        shippingAddress: {
-          street: '123 Main St',
-          city: 'Anytown',
-          state: 'CA',
-          zipCode: '12345'
-        },
-        paymentMethod: {
-          type: 'credit_card',
-          token: 'test_token'
-        }
-      };
-
-      const authToken = generateTestToken(testUser);
-
-      // Act
-      const response = await request(app)
-        .post('/api/v1/orders')
-        .set('Authorization', `Bearer ${authToken}`)
-        .send(orderData)
-        .expect(201);
-
-      // Assert
-      expect(response.body.success).toBe(true);
-      expect(response.body.order).toBeDefined();
-      expect(response.body.order.totalAmount).toBe(199.98);
-
-      // Verify database state
-      const order = await testDb.findOrder(response.body.order.orderId);
-      expect(order).toBeDefined();
-      expect(order.status).toBe(OrderStatus.PENDING);
-
-      // Verify inventory was reserved
-      const updatedProduct = await testDb.findProduct(testProduct.productId);
-      expect(updatedProduct.inventory).toBe(8);
-    });
-
-    it('should fail when insufficient inventory', async () => {
-      // Arrange
-      const orderData = {
-        items: [{
-          productId: testProduct.productId,
-          quantity: 20 // More than available
-        }],
-        shippingAddress: {
-          street: '123 Main St',
-          city: 'Anytown',
-          state: 'CA',
-          zipCode: '12345'
-        },
-        paymentMethod: {
-          type: 'credit_card',
-          token: 'test_token'
-        }
-      };
-
-      const authToken = generateTestToken(testUser);
-
-      // Act & Assert
-      await request(app)
-        .post('/api/v1/orders')
-        .set('Authorization', `Bearer ${authToken}`)
-        .send(orderData)
-        .expect(400);
-
-      // Verify inventory unchanged
-      const product = await testDb.findProduct(testProduct.productId);
-      expect(product.inventory).toBe(10);
-    });
-  });
-});
-```
-
-## Conclusion
-
-This Low-Level Design document provides comprehensive technical specifications for implementing the DavTest1010 Online Shopping Platform. The design includes:
-
-### Key Implementation Features:
-1. **Microservices Architecture**: Detailed component breakdown with clear responsibilities
-2. **Database Schema**: Optimized PostgreSQL schema with proper indexing
-3. **API Specifications**: RESTful API contracts with validation
-4. **Security Implementation**: JWT authentication, input validation, rate limiting
-5. **Performance Optimization**: Multi-level caching, query optimization
-6. **Error Handling**: Comprehensive error handling with circuit breakers
-7. **Event-Driven Architecture**: Saga pattern for distributed transactions
-8. **Monitoring & Observability**: Metrics, logging, and health checks
-9. **Deployment Strategy**: Containerized deployment with Kubernetes
-10. **Testing Strategy**: Unit and integration testing approaches
-
-### Technical Highlights:
-- **Scalability**: Horizontal scaling with auto-scaling policies
-- **Security**: Enterprise-grade security with encryption and audit logging
-- **Performance**: Sub-second response times with optimized caching
-- **Reliability**: 99.9% uptime with circuit breakers and failover
-- **Maintainability**: Clean architecture with separation of concerns
-
-### Next Steps:
-1. Implementation of individual microservices
-2. Infrastructure setup and deployment
-3. Integration testing and performance tuning
-4. Security testing and compliance validation
-5. Production deployment and monitoring setup
-
----
-*Document Version: 1.0*  
-*Last Updated: 2024*  
-*Classification: Internal Use*  
-*Generated from HLD: DavTest1010_HLD.md*
+This comprehensive Low-Level Design document provides detailed implementation specifications for the Online Shopping Platform, including component architectures, data flows, sequence diagrams, database schemas, API specifications, security implementations, and deployment configurations. The design ensures scalability, security, and maintainability while meeting all functional and non-functional requirements.
