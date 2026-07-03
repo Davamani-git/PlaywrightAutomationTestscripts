@@ -1141,7 +1141,7 @@ CREATE INDEX idx_audit_trail_y2024m01_timestamp ON audit_trail_y2024m01(timestam
                 maxLength: 50
               phone:
                 type: string
-                pattern: '^\+?[1-9]\d{1,14}$'
+                pattern: '^\\+?[1-9]\\d{1,14}$'
     responses:
       201:
         description: User registered successfully
