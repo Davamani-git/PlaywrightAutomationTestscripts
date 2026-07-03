@@ -1,76 +1,17 @@
-# DavTest12 Online Shopping Platform - Low-Level Design Document
+# DavTest12 - Online Shopping Platform Low-Level Design (LLD)
 
-## 1. Introduction
+## Executive Summary
 
-### 1.1 Purpose
-This Low-Level Design (LLD) document provides detailed technical specifications for the DavTest12 Online Shopping Platform based on the High-Level Design. It includes component specifications, data flows, sequence diagrams, API definitions, and implementation details.
+This Low-Level Design document provides detailed technical specifications for the DavTest12 Online Shopping Platform, derived from the High-Level Design and Product Requirements Document. The system implements a microservices architecture supporting consumer shopping, seller management, and administrative functions with enterprise-grade security and compliance.
 
-### 1.2 Scope
-This document covers the detailed design of all microservices, database schemas, API specifications, security implementations, and deployment configurations for the online shopping platform.
+## System Architecture
 
-### 1.3 Architecture Overview
-The system follows a microservices architecture pattern with the following key components:
-- API Gateway (Kong)
-- 6 Core Microservices
-- PostgreSQL and Redis databases
-- Message Queue (RabbitMQ)
-- External integrations
+### Microservices Decomposition
 
-## 2. Component Specifications
-
-### 2.1 API Gateway Component
-
-#### 2.1.1 Technology Stack
-- **Framework:** Kong API Gateway
-- **Load Balancer:** Nginx
-- **SSL Termination:** Let's Encrypt
-- **Rate Limiting:** Kong Rate Limiting Plugin
-
-#### 2.1.2 Configuration
-```yaml
-services:
-- name: user-service
-  url: http://user-service:8080
-  plugins:
-  - name: rate-limiting
-    config:
-      minute: 1000
-      policy: redis
-  - name: jwt
-    config:
-      secret_is_base64: false
-
-- name: product-service
-  url: http://product-service:8080
-  plugins:
-  - name: rate-limiting
-    config:
-      minute: 2000
-      policy: redis
-```
-
-#### 2.1.3 Routing Rules
-```javascript
-const routes = {
-  '/api/v1/users/**': 'user-service',
-  '/api/v1/products/**': 'product-service',
-  '/api/v1/orders/**': 'order-service',
-  '/api/v1/payments/**': 'payment-service',
-  '/api/v1/cart/**': 'cart-service',
-  '/api/v1/notifications/**': 'notification-service'
-};
-```
-
-### 2.2 User Service Component
-
-#### 2.2.1 Technology Stack
-- **Framework:** Spring Boot 3.1.0
-- **Database:** PostgreSQL 15
-- **Cache:** Redis 7.0
-- **Security:** Spring Security 6.0
-- **Authentication:** JWT with RS256
-
-#### 2.2.2 Database Schema
+#### 1. User Service
+**Technology Stack:** Spring Boot 3.2, PostgreSQL 15, Redis 7
+**Port:** 8081
+**Database Schema:**
 ```sql
 CREATE TABLE users (
     user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -79,19 +20,18 @@ CREATE TABLE users (
     first_name VARCHAR(100) NOT NULL,
     last_name VARCHAR(100) NOT NULL,
     phone VARCHAR(20),
-    role VARCHAR(20) DEFAULT 'CONSUMER' CHECK (role IN ('CONSUMER', 'SELLER', 'ADMIN')),
+    role VARCHAR(20) NOT NULL CHECK (role IN ('CONSUMER', 'SELLER', 'ADMIN')),
     is_active BOOLEAN DEFAULT true,
     email_verified BOOLEAN DEFAULT false,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_login TIMESTAMP,
     failed_login_attempts INTEGER DEFAULT 0,
-    account_locked_until TIMESTAMP
+    account_locked_until TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE user_addresses (
     address_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(user_id),
     address_type VARCHAR(20) CHECK (address_type IN ('SHIPPING', 'BILLING')),
     street_address VARCHAR(255) NOT NULL,
     city VARCHAR(100) NOT NULL,
@@ -104,218 +44,100 @@ CREATE TABLE user_addresses (
 
 CREATE TABLE user_sessions (
     session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    refresh_token VARCHAR(512) NOT NULL,
+    user_id UUID REFERENCES users(user_id),
+    jwt_token_hash VARCHAR(255) NOT NULL,
+    refresh_token_hash VARCHAR(255) NOT NULL,
     expires_at TIMESTAMP NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    ip_address INET,
-    user_agent TEXT
+    last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
-#### 2.2.3 API Specifications
-```yaml
-openapi: 3.0.0
-info:
-  title: User Service API
-  version: 1.0.0
-paths:
-  /api/v1/users/register:
-    post:
-      summary: Register new user
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [email, password, firstName, lastName]
-              properties:
-                email:
-                  type: string
-                  format: email
-                password:
-                  type: string
-                  minLength: 8
-                  pattern: '^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]'
-                firstName:
-                  type: string
-                  maxLength: 100
-                lastName:
-                  type: string
-                  maxLength: 100
-                phone:
-                  type: string
-                  pattern: '^\+?[1-9]\d{1,14}$'
-      responses:
-        '201':
-          description: User created successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  userId:
-                    type: string
-                    format: uuid
-                  message:
-                    type: string
-        '400':
-          description: Invalid input
-        '409':
-          description: Email already exists
-
-  /api/v1/users/login:
-    post:
-      summary: User login
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [email, password]
-              properties:
-                email:
-                  type: string
-                  format: email
-                password:
-                  type: string
-      responses:
-        '200':
-          description: Login successful
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  accessToken:
-                    type: string
-                  refreshToken:
-                    type: string
-                  expiresIn:
-                    type: integer
-                  user:
-                    $ref: '#/components/schemas/User'
-        '401':
-          description: Invalid credentials
-        '423':
-          description: Account locked
-```
-
-#### 2.2.4 Service Implementation
+**API Endpoints:**
 ```java
-@Service
-@Transactional
-public class UserService {
+@RestController
+@RequestMapping("/api/v1/users")
+public class UserController {
     
-    @Autowired
-    private UserRepository userRepository;
-    
-    @Autowired
-    private PasswordEncoder passwordEncoder;
-    
-    @Autowired
-    private JwtTokenProvider jwtTokenProvider;
-    
-    @Autowired
-    private RedisTemplate<String, Object> redisTemplate;
-    
-    public UserRegistrationResponse registerUser(UserRegistrationRequest request) {
-        // Validate input
-        validateRegistrationRequest(request);
-        
-        // Check if email exists
-        if (userRepository.existsByEmail(request.getEmail())) {
-            throw new EmailAlreadyExistsException("Email already registered");
-        }
-        
-        // Create user entity
-        User user = User.builder()
-            .email(request.getEmail())
-            .passwordHash(passwordEncoder.encode(request.getPassword()))
-            .firstName(request.getFirstName())
-            .lastName(request.getLastName())
-            .phone(request.getPhone())
-            .role(UserRole.CONSUMER)
-            .isActive(true)
-            .emailVerified(false)
-            .build();
-        
-        // Save user
-        User savedUser = userRepository.save(user);
-        
-        // Send verification email
-        emailService.sendVerificationEmail(savedUser);
-        
-        return UserRegistrationResponse.builder()
-            .userId(savedUser.getUserId())
-            .message("User registered successfully. Please verify your email.")
-            .build();
+    @PostMapping("/register")
+    public ResponseEntity<UserRegistrationResponse> registerUser(
+        @Valid @RequestBody UserRegistrationRequest request) {
+        // Input validation, password hashing, email verification
     }
     
-    public LoginResponse authenticateUser(LoginRequest request) {
-        // Check account lock
-        User user = userRepository.findByEmail(request.getEmail())
-            .orElseThrow(() -> new InvalidCredentialsException("Invalid credentials"));
+    @PostMapping("/login")
+    public ResponseEntity<LoginResponse> authenticateUser(
+        @Valid @RequestBody LoginRequest request) {
+        // Authentication, JWT generation, session management
+    }
+    
+    @PostMapping("/logout")
+    public ResponseEntity<Void> logoutUser(
+        @RequestHeader("Authorization") String token) {
+        // Session invalidation, token blacklisting
+    }
+    
+    @GetMapping("/profile")
+    public ResponseEntity<UserProfile> getUserProfile(
+        @AuthenticationPrincipal UserPrincipal user) {
+        // Profile retrieval with role-based filtering
+    }
+    
+    @PutMapping("/profile")
+    public ResponseEntity<UserProfile> updateUserProfile(
+        @AuthenticationPrincipal UserPrincipal user,
+        @Valid @RequestBody UpdateProfileRequest request) {
+        // Profile updates with audit logging
+    }
+}
+```
+
+**Security Implementation:**
+```java
+@Service
+public class AuthenticationService {
+    
+    private static final int MAX_LOGIN_ATTEMPTS = 3;
+    private static final Duration LOCKOUT_DURATION = Duration.ofMinutes(15);
+    
+    public LoginResponse authenticate(LoginRequest request) {
+        User user = validateCredentials(request);
         
-        if (user.getAccountLockedUntil() != null && 
-            user.getAccountLockedUntil().isAfter(LocalDateTime.now())) {
-            throw new AccountLockedException("Account is locked");
+        if (user.isAccountLocked()) {
+            throw new AccountLockedException("Account temporarily locked");
         }
         
-        // Validate password
         if (!passwordEncoder.matches(request.getPassword(), user.getPasswordHash())) {
             handleFailedLogin(user);
             throw new InvalidCredentialsException("Invalid credentials");
         }
         
-        // Reset failed attempts
-        user.setFailedLoginAttempts(0);
-        user.setAccountLockedUntil(null);
-        user.setLastLogin(LocalDateTime.now());
-        userRepository.save(user);
-        
-        // Generate tokens
-        String accessToken = jwtTokenProvider.generateAccessToken(user);
-        String refreshToken = jwtTokenProvider.generateRefreshToken(user);
-        
-        // Store session
-        UserSession session = createUserSession(user, refreshToken);
-        
-        return LoginResponse.builder()
-            .accessToken(accessToken)
-            .refreshToken(refreshToken)
-            .expiresIn(900) // 15 minutes
-            .user(UserDto.fromEntity(user))
-            .build();
+        resetFailedAttempts(user);
+        return generateTokens(user);
     }
     
     private void handleFailedLogin(User user) {
-        int attempts = user.getFailedLoginAttempts() + 1;
-        user.setFailedLoginAttempts(attempts);
-        
-        if (attempts >= 5) {
-            user.setAccountLockedUntil(LocalDateTime.now().plusMinutes(30));
+        user.incrementFailedAttempts();
+        if (user.getFailedLoginAttempts() >= MAX_LOGIN_ATTEMPTS) {
+            user.lockAccount(LOCKOUT_DURATION);
+            notificationService.sendSecurityAlert(user);
         }
-        
         userRepository.save(user);
     }
 }
 ```
 
-### 2.3 Product Service Component
-
-#### 2.3.1 Database Schema
+#### 2. Product Service
+**Technology Stack:** Spring Boot 3.2, PostgreSQL 15, Redis 7, Elasticsearch 8
+**Port:** 8082
+**Database Schema:**
 ```sql
 CREATE TABLE categories (
     category_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR(100) NOT NULL,
+    name VARCHAR(255) NOT NULL,
     description TEXT,
     parent_id UUID REFERENCES categories(category_id),
     is_active BOOLEAN DEFAULT true,
-    sort_order INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -323,50 +145,38 @@ CREATE TABLE categories (
 CREATE TABLE products (
     product_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,
-    description TEXT,
+    description TEXT NOT NULL,
     price DECIMAL(10,2) NOT NULL CHECK (price >= 0),
     seller_id UUID NOT NULL,
     category_id UUID REFERENCES categories(category_id),
-    inventory INTEGER DEFAULT 0 CHECK (inventory >= 0),
     sku VARCHAR(100) UNIQUE,
-    weight DECIMAL(8,2),
-    dimensions JSONB,
+    inventory_quantity INTEGER NOT NULL DEFAULT 0 CHECK (inventory_quantity >= 0),
+    low_stock_threshold INTEGER DEFAULT 10,
     is_active BOOLEAN DEFAULT true,
-    featured BOOLEAN DEFAULT false,
+    approval_status VARCHAR(20) DEFAULT 'PENDING' CHECK (approval_status IN ('PENDING', 'APPROVED', 'REJECTED')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    CONSTRAINT fk_seller FOREIGN KEY (seller_id) REFERENCES users(user_id)
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE product_images (
     image_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    product_id UUID REFERENCES products(product_id) ON DELETE CASCADE,
-    image_url VARCHAR(512) NOT NULL,
+    product_id UUID REFERENCES products(product_id),
+    image_url VARCHAR(500) NOT NULL,
     alt_text VARCHAR(255),
-    sort_order INTEGER DEFAULT 0,
-    is_primary BOOLEAN DEFAULT false,
+    display_order INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE product_attributes (
     attribute_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    product_id UUID REFERENCES products(product_id) ON DELETE CASCADE,
+    product_id UUID REFERENCES products(product_id),
     attribute_name VARCHAR(100) NOT NULL,
     attribute_value VARCHAR(255) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
--- Indexes for performance
-CREATE INDEX idx_products_category ON products(category_id);
-CREATE INDEX idx_products_seller ON products(seller_id);
-CREATE INDEX idx_products_active ON products(is_active);
-CREATE INDEX idx_products_featured ON products(featured);
-CREATE INDEX idx_products_name_gin ON products USING gin(to_tsvector('english', name));
-CREATE INDEX idx_products_description_gin ON products USING gin(to_tsvector('english', description));
 ```
 
-#### 2.3.2 Search Implementation
+**Search Implementation:**
 ```java
 @Service
 public class ProductSearchService {
@@ -374,121 +184,197 @@ public class ProductSearchService {
     @Autowired
     private ElasticsearchRestTemplate elasticsearchTemplate;
     
-    @Autowired
-    private ProductRepository productRepository;
-    
-    public ProductSearchResponse searchProducts(ProductSearchRequest request) {
-        BoolQueryBuilder boolQuery = QueryBuilders.boolQuery();
+    public SearchResponse<Product> searchProducts(ProductSearchRequest request) {
+        BoolQuery.Builder boolQuery = new BoolQuery.Builder();
         
         // Text search
         if (StringUtils.hasText(request.getQuery())) {
-            MultiMatchQueryBuilder multiMatchQuery = QueryBuilders
-                .multiMatchQuery(request.getQuery())
-                .field("name", 2.0f)
-                .field("description", 1.0f)
-                .field("attributes.value", 0.5f)
-                .type(MultiMatchQueryBuilder.Type.BEST_FIELDS)
-                .fuzziness(Fuzziness.AUTO);
-            
-            boolQuery.must(multiMatchQuery);
-        }
-        
-        // Category filter
-        if (request.getCategoryId() != null) {
-            boolQuery.filter(QueryBuilders.termQuery("categoryId", request.getCategoryId()));
+            boolQuery.must(MultiMatchQuery.of(m -> m
+                .fields("name^3", "description^2", "attributes.value")
+                .query(request.getQuery())
+                .type(TextQueryType.BestFields)
+                .fuzziness("AUTO")
+            ));
         }
         
         // Price range filter
-        if (request.getMinPrice() != null || request.getMaxPrice() != null) {
-            RangeQueryBuilder priceRange = QueryBuilders.rangeQuery("price");
-            if (request.getMinPrice() != null) {
-                priceRange.gte(request.getMinPrice());
-            }
-            if (request.getMaxPrice() != null) {
-                priceRange.lte(request.getMaxPrice());
-            }
-            boolQuery.filter(priceRange);
+        if (request.getPriceMin() != null || request.getPriceMax() != null) {
+            RangeQuery.Builder rangeQuery = new RangeQuery.Builder().field("price");
+            if (request.getPriceMin() != null) rangeQuery.gte(JsonData.of(request.getPriceMin()));
+            if (request.getPriceMax() != null) rangeQuery.lte(JsonData.of(request.getPriceMax()));
+            boolQuery.filter(rangeQuery.build()._toQuery());
         }
         
-        // Active products only
-        boolQuery.filter(QueryBuilders.termQuery("isActive", true));
-        
-        // Build search query
-        NativeSearchQueryBuilder searchQueryBuilder = new NativeSearchQueryBuilder()
-            .withQuery(boolQuery)
-            .withPageable(PageRequest.of(request.getPage(), request.getSize()))
-            .withSorts(buildSortOptions(request.getSortBy(), request.getSortDirection()));
-        
-        // Add aggregations for faceted search
-        searchQueryBuilder.addAggregation(
-            AggregationBuilders.terms("categories")
+        // Category filter
+        if (request.getCategoryIds() != null && !request.getCategoryIds().isEmpty()) {
+            boolQuery.filter(TermsQuery.of(t -> t
                 .field("categoryId")
-                .size(10)
+                .terms(TermsQueryField.of(tf -> tf.value(
+                    request.getCategoryIds().stream()
+                        .map(FieldValue::of)
+                        .collect(Collectors.toList())
+                )))
+            ));
+        }
+        
+        SearchRequest searchRequest = SearchRequest.of(s -> s
+            .index("products")
+            .query(boolQuery.build()._toQuery())
+            .sort(SortOptions.of(so -> so.score(ScoreSort.of(ss -> ss.order(SortOrder.Desc)))))
+            .from(request.getOffset())
+            .size(request.getLimit())
         );
         
-        searchQueryBuilder.addAggregation(
-            AggregationBuilders.range("priceRanges")
-                .field("price")
-                .addRange("0-25", 0, 25)
-                .addRange("25-50", 25, 50)
-                .addRange("50-100", 50, 100)
-                .addRange("100+", 100, Double.MAX_VALUE)
-        );
-        
-        // Execute search
-        SearchHits<ProductDocument> searchHits = elasticsearchTemplate
-            .search(searchQueryBuilder.build(), ProductDocument.class);
-        
-        // Process results
-        List<ProductDto> products = searchHits.getSearchHits().stream()
-            .map(hit -> ProductDto.fromDocument(hit.getContent()))
-            .collect(Collectors.toList());
-        
-        return ProductSearchResponse.builder()
-            .products(products)
-            .totalElements(searchHits.getTotalHits())
-            .totalPages((int) Math.ceil((double) searchHits.getTotalHits() / request.getSize()))
-            .currentPage(request.getPage())
-            .facets(extractFacets(searchHits.getAggregations()))
-            .build();
+        return elasticsearchTemplate.search(searchRequest, Product.class);
     }
 }
 ```
 
-### 2.4 Order Service Component
+#### 3. Cart Service
+**Technology Stack:** Spring Boot 3.2, Redis 7
+**Port:** 8083
+**Redis Data Structure:**
+```java
+@RedisHash("shopping_cart")
+public class ShoppingCart {
+    @Id
+    private String cartId;
+    private String userId;
+    private List<CartItem> items;
+    private BigDecimal totalAmount;
+    private LocalDateTime createdAt;
+    private LocalDateTime updatedAt;
+    
+    @TimeToLive
+    private Long ttl = 2592000L; // 30 days
+}
 
-#### 2.4.1 Database Schema
+@RedisHash("cart_item")
+public class CartItem {
+    private String productId;
+    private String productName;
+    private BigDecimal unitPrice;
+    private Integer quantity;
+    private BigDecimal subtotal;
+    private LocalDateTime addedAt;
+}
+```
+
+**Cart Operations:**
+```java
+@Service
+public class CartService {
+    
+    @Autowired
+    private RedisTemplate<String, Object> redisTemplate;
+    
+    @Autowired
+    private ProductServiceClient productServiceClient;
+    
+    public CartResponse addToCart(String userId, AddToCartRequest request) {
+        // Validate product availability
+        Product product = productServiceClient.getProduct(request.getProductId());
+        if (product.getInventoryQuantity() < request.getQuantity()) {
+            throw new InsufficientInventoryException("Not enough inventory available");
+        }
+        
+        ShoppingCart cart = getOrCreateCart(userId);
+        CartItem existingItem = cart.getItems().stream()
+            .filter(item -> item.getProductId().equals(request.getProductId()))
+            .findFirst()
+            .orElse(null);
+            
+        if (existingItem != null) {
+            int newQuantity = existingItem.getQuantity() + request.getQuantity();
+            if (newQuantity > product.getInventoryQuantity()) {
+                throw new InsufficientInventoryException("Total quantity exceeds available inventory");
+            }
+            existingItem.setQuantity(newQuantity);
+            existingItem.setSubtotal(product.getPrice().multiply(BigDecimal.valueOf(newQuantity)));
+        } else {
+            CartItem newItem = CartItem.builder()
+                .productId(request.getProductId())
+                .productName(product.getName())
+                .unitPrice(product.getPrice())
+                .quantity(request.getQuantity())
+                .subtotal(product.getPrice().multiply(BigDecimal.valueOf(request.getQuantity())))
+                .addedAt(LocalDateTime.now())
+                .build();
+            cart.getItems().add(newItem);
+        }
+        
+        cart.setTotalAmount(calculateTotal(cart.getItems()));
+        cart.setUpdatedAt(LocalDateTime.now());
+        
+        redisTemplate.opsForValue().set("cart:" + userId, cart, Duration.ofDays(30));
+        
+        return CartResponse.from(cart);
+    }
+    
+    public CartResponse updateCartItem(String userId, String productId, UpdateCartItemRequest request) {
+        ShoppingCart cart = getCart(userId);
+        if (cart == null) {
+            throw new CartNotFoundException("Cart not found");
+        }
+        
+        CartItem item = cart.getItems().stream()
+            .filter(cartItem -> cartItem.getProductId().equals(productId))
+            .findFirst()
+            .orElseThrow(() -> new CartItemNotFoundException("Item not found in cart"));
+            
+        if (request.getQuantity() <= 0) {
+            cart.getItems().remove(item);
+        } else {
+            // Validate inventory
+            Product product = productServiceClient.getProduct(productId);
+            if (request.getQuantity() > product.getInventoryQuantity()) {
+                throw new InsufficientInventoryException("Requested quantity exceeds available inventory");
+            }
+            
+            item.setQuantity(request.getQuantity());
+            item.setSubtotal(item.getUnitPrice().multiply(BigDecimal.valueOf(request.getQuantity())));
+        }
+        
+        cart.setTotalAmount(calculateTotal(cart.getItems()));
+        cart.setUpdatedAt(LocalDateTime.now());
+        
+        redisTemplate.opsForValue().set("cart:" + userId, cart, Duration.ofDays(30));
+        
+        return CartResponse.from(cart);
+    }
+}
+```
+
+#### 4. Order Service
+**Technology Stack:** Spring Boot 3.2, PostgreSQL 15
+**Port:** 8084
+**Database Schema:**
 ```sql
 CREATE TABLE orders (
     order_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL,
-    order_number VARCHAR(20) UNIQUE NOT NULL,
-    status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'CONFIRMED', 'SHIPPED', 'DELIVERED', 'CANCELLED')),
-    subtotal DECIMAL(10,2) NOT NULL CHECK (subtotal >= 0),
-    tax_amount DECIMAL(10,2) DEFAULT 0 CHECK (tax_amount >= 0),
-    shipping_amount DECIMAL(10,2) DEFAULT 0 CHECK (shipping_amount >= 0),
-    discount_amount DECIMAL(10,2) DEFAULT 0 CHECK (discount_amount >= 0),
+    order_number VARCHAR(50) UNIQUE NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'CONFIRMED', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'CANCELLED')),
     total_amount DECIMAL(10,2) NOT NULL CHECK (total_amount >= 0),
-    currency VARCHAR(3) DEFAULT 'USD',
-    shipping_address JSONB NOT NULL,
-    billing_address JSONB NOT NULL,
+    shipping_amount DECIMAL(10,2) DEFAULT 0,
+    tax_amount DECIMAL(10,2) DEFAULT 0,
+    shipping_address_id UUID NOT NULL,
+    billing_address_id UUID NOT NULL,
     payment_method VARCHAR(50),
+    estimated_delivery_date DATE,
+    tracking_number VARCHAR(100),
+    carrier VARCHAR(100),
     notes TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    confirmed_at TIMESTAMP,
-    shipped_at TIMESTAMP,
-    delivered_at TIMESTAMP,
-    
-    CONSTRAINT fk_order_user FOREIGN KEY (user_id) REFERENCES users(user_id)
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE order_items (
     order_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id UUID REFERENCES orders(order_id) ON DELETE CASCADE,
+    order_id UUID REFERENCES orders(order_id),
     product_id UUID NOT NULL,
     product_name VARCHAR(255) NOT NULL,
-    product_sku VARCHAR(100),
+    seller_id UUID NOT NULL,
     quantity INTEGER NOT NULL CHECK (quantity > 0),
     unit_price DECIMAL(10,2) NOT NULL CHECK (unit_price >= 0),
     total_price DECIMAL(10,2) NOT NULL CHECK (total_price >= 0),
@@ -497,464 +383,430 @@ CREATE TABLE order_items (
 
 CREATE TABLE order_status_history (
     history_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id UUID REFERENCES orders(order_id) ON DELETE CASCADE,
-    from_status VARCHAR(20),
-    to_status VARCHAR(20) NOT NULL,
-    changed_by UUID,
-    reason TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE shipments (
-    shipment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     order_id UUID REFERENCES orders(order_id),
-    tracking_number VARCHAR(100),
-    carrier VARCHAR(100),
-    shipped_at TIMESTAMP,
-    estimated_delivery TIMESTAMP,
-    delivered_at TIMESTAMP,
+    previous_status VARCHAR(20),
+    new_status VARCHAR(20) NOT NULL,
+    changed_by UUID,
+    change_reason TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
-#### 2.4.2 Order State Machine
+**Order State Machine:**
 ```java
 @Component
 public class OrderStateMachine {
     
     private static final Map<OrderStatus, Set<OrderStatus>> VALID_TRANSITIONS = Map.of(
         OrderStatus.PENDING, Set.of(OrderStatus.CONFIRMED, OrderStatus.CANCELLED),
-        OrderStatus.CONFIRMED, Set.of(OrderStatus.SHIPPED, OrderStatus.CANCELLED),
+        OrderStatus.CONFIRMED, Set.of(OrderStatus.PROCESSING, OrderStatus.CANCELLED),
+        OrderStatus.PROCESSING, Set.of(OrderStatus.SHIPPED, OrderStatus.CANCELLED),
         OrderStatus.SHIPPED, Set.of(OrderStatus.DELIVERED),
         OrderStatus.DELIVERED, Set.of(),
         OrderStatus.CANCELLED, Set.of()
     );
     
     public boolean isValidTransition(OrderStatus from, OrderStatus to) {
-        return VALID_TRANSITIONS.get(from).contains(to);
+        return VALID_TRANSITIONS.getOrDefault(from, Set.of()).contains(to);
     }
     
     @EventListener
-    public void handleOrderStatusChange(OrderStatusChangedEvent event) {
+    public void handleOrderStatusChange(OrderStatusChangeEvent event) {
         Order order = event.getOrder();
         OrderStatus newStatus = event.getNewStatus();
         
-        switch (newStatus) {
-            case CONFIRMED:
-                handleOrderConfirmation(order);
-                break;
-            case SHIPPED:
-                handleOrderShipment(order);
-                break;
-            case DELIVERED:
-                handleOrderDelivery(order);
-                break;
-            case CANCELLED:
-                handleOrderCancellation(order);
-                break;
+        if (!isValidTransition(order.getStatus(), newStatus)) {
+            throw new InvalidOrderTransitionException(
+                String.format("Invalid transition from %s to %s", order.getStatus(), newStatus)
+            );
         }
-    }
-    
-    private void handleOrderConfirmation(Order order) {
-        // Reserve inventory
-        inventoryService.reserveItems(order.getOrderItems());
         
-        // Send confirmation email
-        notificationService.sendOrderConfirmation(order);
+        OrderStatus previousStatus = order.getStatus();
+        order.setStatus(newStatus);
+        order.setUpdatedAt(LocalDateTime.now());
         
-        // Update analytics
-        analyticsService.trackOrderConfirmation(order);
-    }
-    
-    private void handleOrderShipment(Order order) {
-        // Create shipment record
-        Shipment shipment = shipmentService.createShipment(order);
+        // Save status history
+        OrderStatusHistory history = OrderStatusHistory.builder()
+            .orderId(order.getOrderId())
+            .previousStatus(previousStatus)
+            .newStatus(newStatus)
+            .changedBy(event.getChangedBy())
+            .changeReason(event.getReason())
+            .createdAt(LocalDateTime.now())
+            .build();
+            
+        orderStatusHistoryRepository.save(history);
+        orderRepository.save(order);
         
-        // Send tracking information
-        notificationService.sendShippingNotification(order, shipment);
+        // Trigger notifications
+        notificationService.sendOrderStatusNotification(order, previousStatus, newStatus);
         
-        // Update inventory
-        inventoryService.commitReservation(order.getOrderItems());
+        // Handle inventory and other side effects
+        handleStatusChangeEffects(order, previousStatus, newStatus);
     }
 }
 ```
 
-### 2.5 Payment Service Component
-
-#### 2.5.1 Database Schema
-```sql
-CREATE TABLE payments (
-    payment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id UUID NOT NULL,
-    amount DECIMAL(10,2) NOT NULL CHECK (amount > 0),
-    currency VARCHAR(3) DEFAULT 'USD',
-    method VARCHAR(20) CHECK (method IN ('CREDIT_CARD', 'DEBIT_CARD', 'PAYPAL', 'BANK_TRANSFER')),
-    status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'REFUNDED')),
-    gateway_provider VARCHAR(50),
-    gateway_transaction_id VARCHAR(255),
-    gateway_response JSONB,
-    failure_reason TEXT,
-    processed_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE payment_methods (
-    payment_method_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL,
-    type VARCHAR(20) NOT NULL,
-    card_last_four VARCHAR(4),
-    card_brand VARCHAR(20),
-    card_expiry_month INTEGER,
-    card_expiry_year INTEGER,
-    paypal_email VARCHAR(255),
-    is_default BOOLEAN DEFAULT false,
-    is_active BOOLEAN DEFAULT true,
-    gateway_token VARCHAR(255),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    CONSTRAINT fk_payment_method_user FOREIGN KEY (user_id) REFERENCES users(user_id)
-);
-
-CREATE TABLE refunds (
-    refund_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    payment_id UUID REFERENCES payments(payment_id),
-    amount DECIMAL(10,2) NOT NULL CHECK (amount > 0),
-    reason TEXT,
-    status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED')),
-    gateway_refund_id VARCHAR(255),
-    processed_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### 2.5.2 Payment Processing Implementation
+#### 5. Payment Service
+**Technology Stack:** Spring Boot 3.2, PostgreSQL 15
+**Port:** 8085
+**PCI DSS Compliance Implementation:**
 ```java
 @Service
-@Transactional
 public class PaymentService {
     
     @Autowired
-    private PaymentRepository paymentRepository;
+    private PaymentGatewayFactory gatewayFactory;
     
     @Autowired
-    private StripePaymentGateway stripeGateway;
+    private TokenizationService tokenizationService;
     
     @Autowired
-    private PayPalPaymentGateway paypalGateway;
+    private FraudDetectionService fraudDetectionService;
     
+    @Transactional
     public PaymentResponse processPayment(PaymentRequest request) {
-        // Create payment record
-        Payment payment = Payment.builder()
-            .orderId(request.getOrderId())
-            .amount(request.getAmount())
-            .currency(request.getCurrency())
-            .method(request.getPaymentMethod())
-            .status(PaymentStatus.PENDING)
-            .build();
+        // Fraud detection
+        FraudAssessment fraudAssessment = fraudDetectionService.assessPayment(request);
+        if (fraudAssessment.getRiskLevel() == RiskLevel.HIGH) {
+            throw new PaymentDeclinedException("Payment declined due to fraud risk");
+        }
         
-        payment = paymentRepository.save(payment);
+        // Tokenize sensitive payment data
+        String paymentToken = tokenizationService.tokenizePaymentMethod(request.getPaymentMethod());
         
         try {
-            // Select payment gateway
-            PaymentGateway gateway = selectPaymentGateway(request.getPaymentMethod());
+            PaymentGateway gateway = gatewayFactory.getGateway(request.getPaymentMethod().getType());
             
-            // Process payment
-            PaymentGatewayResponse gatewayResponse = gateway.processPayment(
-                PaymentGatewayRequest.builder()
-                    .amount(request.getAmount())
-                    .currency(request.getCurrency())
-                    .paymentMethodToken(request.getPaymentMethodToken())
-                    .orderId(request.getOrderId())
-                    .build()
-            );
-            
-            // Update payment record
-            payment.setGatewayProvider(gateway.getProviderName());
-            payment.setGatewayTransactionId(gatewayResponse.getTransactionId());
-            payment.setGatewayResponse(gatewayResponse.getRawResponse());
-            
-            if (gatewayResponse.isSuccessful()) {
-                payment.setStatus(PaymentStatus.COMPLETED);
-                payment.setProcessedAt(LocalDateTime.now());
+            PaymentGatewayRequest gatewayRequest = PaymentGatewayRequest.builder()
+                .amount(request.getAmount())
+                .currency(request.getCurrency())
+                .paymentToken(paymentToken)
+                .orderId(request.getOrderId())
+                .build();
                 
-                // Publish payment completed event
-                eventPublisher.publishEvent(new PaymentCompletedEvent(payment));
-            } else {
-                payment.setStatus(PaymentStatus.FAILED);
-                payment.setFailureReason(gatewayResponse.getErrorMessage());
-            }
+            PaymentGatewayResponse gatewayResponse = gateway.processPayment(gatewayRequest);
             
-            payment = paymentRepository.save(payment);
+            // Save payment record
+            Payment payment = Payment.builder()
+                .paymentId(UUID.randomUUID())
+                .orderId(request.getOrderId())
+                .amount(request.getAmount())
+                .currency(request.getCurrency())
+                .paymentMethodToken(paymentToken)
+                .gatewayTransactionId(gatewayResponse.getTransactionId())
+                .status(mapGatewayStatus(gatewayResponse.getStatus()))
+                .processedAt(LocalDateTime.now())
+                .build();
+                
+            paymentRepository.save(payment);
+            
+            // Publish payment event
+            eventPublisher.publishEvent(new PaymentProcessedEvent(payment));
             
             return PaymentResponse.builder()
                 .paymentId(payment.getPaymentId())
                 .status(payment.getStatus())
                 .transactionId(payment.getGatewayTransactionId())
-                .message(gatewayResponse.getMessage())
                 .build();
                 
-        } catch (Exception e) {
-            payment.setStatus(PaymentStatus.FAILED);
-            payment.setFailureReason(e.getMessage());
-            paymentRepository.save(payment);
+        } catch (PaymentGatewayException e) {
+            // Handle payment failures
+            Payment failedPayment = Payment.builder()
+                .paymentId(UUID.randomUUID())
+                .orderId(request.getOrderId())
+                .amount(request.getAmount())
+                .status(PaymentStatus.FAILED)
+                .failureReason(e.getMessage())
+                .processedAt(LocalDateTime.now())
+                .build();
+                
+            paymentRepository.save(failedPayment);
             
-            throw new PaymentProcessingException("Payment processing failed", e);
-        }
-    }
-    
-    private PaymentGateway selectPaymentGateway(PaymentMethod method) {
-        switch (method) {
-            case CREDIT_CARD:
-            case DEBIT_CARD:
-                return stripeGateway;
-            case PAYPAL:
-                return paypalGateway;
-            default:
-                throw new UnsupportedPaymentMethodException("Unsupported payment method: " + method);
+            throw new PaymentProcessingException("Payment processing failed: " + e.getMessage());
         }
     }
 }
 ```
 
-### 2.6 Cart Service Component
-
-#### 2.6.1 Redis Schema Design
-```java
-@RedisHash("shopping_cart")
-public class ShoppingCart {
-    @Id
-    private String cartId;
-    
-    @Indexed
-    private String userId;
-    
-    private List<CartItem> items = new ArrayList<>();
-    
-    private BigDecimal totalAmount = BigDecimal.ZERO;
-    
-    @TimeToLive
-    private Long ttl = 86400L; // 24 hours
-    
-    private LocalDateTime createdAt;
-    private LocalDateTime updatedAt;
-}
-
-@Data
-public class CartItem {
-    private String productId;
-    private String productName;
-    private String productSku;
-    private BigDecimal unitPrice;
-    private Integer quantity;
-    private BigDecimal totalPrice;
-    private LocalDateTime addedAt;
-}
-```
-
-#### 2.6.2 Cart Service Implementation
+**Tokenization Service:**
 ```java
 @Service
-public class CartService {
+public class TokenizationService {
     
     @Autowired
-    private CartRepository cartRepository;
+    private AESUtil aesUtil;
     
-    @Autowired
-    private ProductService productService;
+    @Value("${payment.tokenization.key}")
+    private String tokenizationKey;
     
-    @Autowired
-    private RedisTemplate<String, Object> redisTemplate;
-    
-    public CartResponse addToCart(String userId, AddToCartRequest request) {
-        // Get or create cart
-        ShoppingCart cart = cartRepository.findByUserId(userId)
-            .orElse(createNewCart(userId));
-        
-        // Validate product
-        ProductDto product = productService.getProduct(request.getProductId());
-        if (!product.isActive()) {
-            throw new ProductNotAvailableException("Product is not available");
-        }
-        
-        if (product.getInventory() < request.getQuantity()) {
-            throw new InsufficientInventoryException("Not enough inventory available");
-        }
-        
-        // Check if item already exists in cart
-        Optional<CartItem> existingItem = cart.getItems().stream()
-            .filter(item -> item.getProductId().equals(request.getProductId()))
-            .findFirst();
-        
-        if (existingItem.isPresent()) {
-            // Update quantity
-            CartItem item = existingItem.get();
-            int newQuantity = item.getQuantity() + request.getQuantity();
+    public String tokenizePaymentMethod(PaymentMethod paymentMethod) {
+        try {
+            String sensitiveData = objectMapper.writeValueAsString(paymentMethod);
+            String encryptedData = aesUtil.encrypt(sensitiveData, tokenizationKey);
             
-            if (product.getInventory() < newQuantity) {
-                throw new InsufficientInventoryException("Not enough inventory available");
-            }
-            
-            item.setQuantity(newQuantity);
-            item.setTotalPrice(product.getPrice().multiply(BigDecimal.valueOf(newQuantity)));
-        } else {
-            // Add new item
-            CartItem newItem = CartItem.builder()
-                .productId(request.getProductId())
-                .productName(product.getName())
-                .productSku(product.getSku())
-                .unitPrice(product.getPrice())
-                .quantity(request.getQuantity())
-                .totalPrice(product.getPrice().multiply(BigDecimal.valueOf(request.getQuantity())))
-                .addedAt(LocalDateTime.now())
+            PaymentToken token = PaymentToken.builder()
+                .tokenId(UUID.randomUUID().toString())
+                .encryptedData(encryptedData)
+                .paymentMethodType(paymentMethod.getType())
+                .lastFourDigits(extractLastFourDigits(paymentMethod))
+                .expiryDate(paymentMethod.getExpiryDate())
+                .createdAt(LocalDateTime.now())
                 .build();
+                
+            paymentTokenRepository.save(token);
             
-            cart.getItems().add(newItem);
+            return token.getTokenId();
+            
+        } catch (Exception e) {
+            throw new TokenizationException("Failed to tokenize payment method", e);
         }
-        
-        // Recalculate total
-        cart.setTotalAmount(calculateCartTotal(cart));
-        cart.setUpdatedAt(LocalDateTime.now());
-        
-        // Save cart
-        cart = cartRepository.save(cart);
-        
-        return CartResponse.fromEntity(cart);
     }
     
-    private BigDecimal calculateCartTotal(ShoppingCart cart) {
-        return cart.getItems().stream()
-            .map(CartItem::getTotalPrice)
-            .reduce(BigDecimal.ZERO, BigDecimal::add);
-    }
-    
-    @Scheduled(fixedRate = 300000) // Every 5 minutes
-    public void validateCartInventory() {
-        // Get all active carts
-        Iterable<ShoppingCart> carts = cartRepository.findAll();
-        
-        for (ShoppingCart cart : carts) {
-            boolean cartModified = false;
-            Iterator<CartItem> itemIterator = cart.getItems().iterator();
+    public PaymentMethod detokenizePaymentMethod(String tokenId) {
+        PaymentToken token = paymentTokenRepository.findByTokenId(tokenId)
+            .orElseThrow(() -> new TokenNotFoundException("Payment token not found"));
             
-            while (itemIterator.hasNext()) {
-                CartItem item = itemIterator.next();
-                
-                try {
-                    ProductDto product = productService.getProduct(item.getProductId());
-                    
-                    if (!product.isActive()) {
-                        // Remove inactive products
-                        itemIterator.remove();
-                        cartModified = true;
-                    } else if (product.getInventory() < item.getQuantity()) {
-                        // Adjust quantity to available inventory
-                        item.setQuantity(product.getInventory());
-                        item.setTotalPrice(item.getUnitPrice().multiply(BigDecimal.valueOf(item.getQuantity())));
-                        cartModified = true;
-                    }
-                } catch (ProductNotFoundException e) {
-                    // Remove non-existent products
-                    itemIterator.remove();
-                    cartModified = true;
-                }
-            }
-            
-            if (cartModified) {
-                cart.setTotalAmount(calculateCartTotal(cart));
-                cart.setUpdatedAt(LocalDateTime.now());
-                cartRepository.save(cart);
-                
-                // Notify user of cart changes
-                notificationService.sendCartUpdateNotification(cart.getUserId(), cart);
-            }
+        try {
+            String decryptedData = aesUtil.decrypt(token.getEncryptedData(), tokenizationKey);
+            return objectMapper.readValue(decryptedData, PaymentMethod.class);
+        } catch (Exception e) {
+            throw new DetokenizationException("Failed to detokenize payment method", e);
         }
     }
 }
 ```
 
-## 3. Data Flow Diagrams
-
-### 3.1 User Registration Flow
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant AG as API Gateway
-    participant US as User Service
-    participant DB as PostgreSQL
-    participant ES as Email Service
-    participant R as Redis
+#### 6. Notification Service
+**Technology Stack:** Spring Boot 3.2, RabbitMQ, PostgreSQL 15
+**Port:** 8086
+**Message Queue Implementation:**
+```java
+@Component
+public class NotificationEventListener {
     
-    U->>AG: POST /api/v1/users/register
-    AG->>AG: Rate Limiting Check
-    AG->>US: Forward Request
-    US->>US: Validate Input
-    US->>DB: Check Email Exists
-    DB-->>US: Email Available
-    US->>US: Hash Password
-    US->>DB: Save User
-    DB-->>US: User Created
-    US->>ES: Send Verification Email
-    ES-->>US: Email Sent
-    US->>R: Cache User Session
-    US-->>AG: Registration Response
-    AG-->>U: 201 Created
+    @Autowired
+    private EmailService emailService;
+    
+    @Autowired
+    private SmsService smsService;
+    
+    @Autowired
+    private PushNotificationService pushNotificationService;
+    
+    @RabbitListener(queues = "order.status.changed")
+    public void handleOrderStatusChange(OrderStatusChangeEvent event) {
+        User user = userServiceClient.getUser(event.getUserId());
+        NotificationPreferences preferences = getNotificationPreferences(user.getUserId());
+        
+        if (preferences.isEmailEnabled()) {
+            EmailTemplate template = getOrderStatusEmailTemplate(event.getNewStatus());
+            EmailMessage message = EmailMessage.builder()
+                .to(user.getEmail())
+                .subject(template.getSubject())
+                .body(template.render(event))
+                .build();
+            emailService.sendEmail(message);
+        }
+        
+        if (preferences.isSmsEnabled() && user.getPhone() != null) {
+            SmsTemplate template = getOrderStatusSmsTemplate(event.getNewStatus());
+            SmsMessage message = SmsMessage.builder()
+                .to(user.getPhone())
+                .body(template.render(event))
+                .build();
+            smsService.sendSms(message);
+        }
+    }
+    
+    @RabbitListener(queues = "user.security.alert")
+    public void handleSecurityAlert(SecurityAlertEvent event) {
+        User user = userServiceClient.getUser(event.getUserId());
+        
+        EmailTemplate template = getSecurityAlertEmailTemplate(event.getAlertType());
+        EmailMessage message = EmailMessage.builder()
+            .to(user.getEmail())
+            .subject("Security Alert - DavTest12")
+            .body(template.render(event))
+            .priority(EmailPriority.HIGH)
+            .build();
+            
+        emailService.sendEmail(message);
+    }
+}
 ```
 
-### 3.2 Product Search Flow
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant AG as API Gateway
-    participant PS as Product Service
-    participant ES as Elasticsearch
-    participant R as Redis
-    participant DB as PostgreSQL
-    
-    U->>AG: GET /api/v1/products/search
-    AG->>PS: Forward Request
-    PS->>R: Check Cache
-    alt Cache Hit
-        R-->>PS: Cached Results
-    else Cache Miss
-        PS->>ES: Search Query
-        ES-->>PS: Search Results
-        PS->>DB: Get Product Details
-        DB-->>PS: Product Data
-        PS->>R: Cache Results
-    end
-    PS-->>AG: Search Response
-    AG-->>U: 200 OK with Results
+### API Gateway Configuration
+**Technology:** Kong Gateway
+**Configuration:**
+```yaml
+services:
+  - name: user-service
+    url: http://user-service:8081
+    routes:
+      - name: user-routes
+        paths:
+          - /api/v1/users
+        methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        plugins:
+          - name: jwt
+            config:
+              secret_is_base64: false
+              key_claim_name: sub
+          - name: rate-limiting
+            config:
+              minute: 1000
+              policy: local
+              fault_tolerant: true
+              hide_client_headers: false
+
+  - name: product-service
+    url: http://product-service:8082
+    routes:
+      - name: product-routes
+        paths:
+          - /api/v1/products
+        methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        plugins:
+          - name: cors
+            config:
+              origins:
+                - "*"
+              methods:
+                - GET
+                - POST
+                - PUT
+                - DELETE
+              headers:
+                - Accept
+                - Authorization
+                - Content-Type
+          - name: response-transformer
+            config:
+              remove:
+                headers:
+                  - "X-Internal-Header"
 ```
 
-### 3.3 Order Processing Flow
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant AG as API Gateway
-    participant OS as Order Service
-    participant PS as Payment Service
-    participant IS as Inventory Service
-    participant NS as Notification Service
-    participant MQ as RabbitMQ
-    
-    U->>AG: POST /api/v1/orders
-    AG->>OS: Create Order
-    OS->>IS: Reserve Inventory
-    IS-->>OS: Inventory Reserved
-    OS->>PS: Process Payment
-    PS->>PS: Gateway Processing
-    PS-->>OS: Payment Successful
-    OS->>MQ: Publish Order Created Event
-    MQ->>NS: Order Notification
-    NS->>NS: Send Confirmation Email
-    OS-->>AG: Order Created
-    AG-->>U: 201 Created
+### Database Design
+
+#### Connection Pooling Configuration
+```yaml
+spring:
+  datasource:
+    hikari:
+      connection-timeout: 20000
+      minimum-idle: 10
+      maximum-pool-size: 50
+      idle-timeout: 300000
+      max-lifetime: 1200000
+      auto-commit: false
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          batch_size: 25
+        order_inserts: true
+        order_updates: true
+        jdbc.batch_versioned_data: true
 ```
 
-## 4. Security Implementation Details
+#### Database Indexes
+```sql
+-- User service indexes
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_role_active ON users(role, is_active);
+CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
+CREATE INDEX idx_user_sessions_expires_at ON user_sessions(expires_at);
 
-### 4.1 JWT Token Implementation
+-- Product service indexes
+CREATE INDEX idx_products_category_id ON products(category_id);
+CREATE INDEX idx_products_seller_id ON products(seller_id);
+CREATE INDEX idx_products_name_trgm ON products USING gin(name gin_trgm_ops);
+CREATE INDEX idx_products_price ON products(price);
+CREATE INDEX idx_products_inventory ON products(inventory_quantity);
+CREATE INDEX idx_products_status ON products(approval_status, is_active);
+
+-- Order service indexes
+CREATE INDEX idx_orders_user_id ON orders(user_id);
+CREATE INDEX idx_orders_status ON orders(status);
+CREATE INDEX idx_orders_created_at ON orders(created_at);
+CREATE INDEX idx_order_items_order_id ON order_items(order_id);
+CREATE INDEX idx_order_items_product_id ON order_items(product_id);
+CREATE INDEX idx_order_items_seller_id ON order_items(seller_id);
+```
+
+### Caching Strategy
+
+#### Redis Configuration
+```java
+@Configuration
+@EnableCaching
+public class CacheConfig {
+    
+    @Bean
+    public RedisCacheManager cacheManager(RedisConnectionFactory connectionFactory) {
+        RedisCacheConfiguration config = RedisCacheConfiguration.defaultCacheConfig()
+            .entryTtl(Duration.ofMinutes(10))
+            .serializeKeysWith(RedisSerializationContext.SerializationPair.fromSerializer(new StringRedisSerializer()))
+            .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(new GenericJackson2JsonRedisSerializer()));
+            
+        Map<String, RedisCacheConfiguration> cacheConfigurations = new HashMap<>();
+        
+        // Product cache - longer TTL
+        cacheConfigurations.put("products", config.entryTtl(Duration.ofHours(1)));
+        
+        // User profile cache - medium TTL
+        cacheConfigurations.put("user-profiles", config.entryTtl(Duration.ofMinutes(30)));
+        
+        // Search results cache - short TTL
+        cacheConfigurations.put("search-results", config.entryTtl(Duration.ofMinutes(5)));
+        
+        return RedisCacheManager.builder(connectionFactory)
+            .cacheDefaults(config)
+            .withInitialCacheConfigurations(cacheConfigurations)
+            .build();
+    }
+}
+```
+
+#### Cache Implementation
+```java
+@Service
+public class ProductService {
+    
+    @Cacheable(value = "products", key = "#productId")
+    public Product getProduct(UUID productId) {
+        return productRepository.findById(productId)
+            .orElseThrow(() -> new ProductNotFoundException("Product not found"));
+    }
+    
+    @CacheEvict(value = "products", key = "#product.productId")
+    public Product updateProduct(Product product) {
+        return productRepository.save(product);
+    }
+    
+    @Cacheable(value = "search-results", key = "#request.hashCode()")
+    public SearchResponse<Product> searchProducts(ProductSearchRequest request) {
+        return productSearchService.searchProducts(request);
+    }
+}
+```
+
+### Security Implementation
+
+#### JWT Configuration
 ```java
 @Component
 public class JwtTokenProvider {
@@ -962,201 +814,318 @@ public class JwtTokenProvider {
     @Value("${jwt.secret}")
     private String jwtSecret;
     
-    @Value("${jwt.access-token-expiration}")
-    private int accessTokenExpiration;
+    @Value("${jwt.expiration}")
+    private int jwtExpirationInMs;
     
-    @Value("${jwt.refresh-token-expiration}")
-    private int refreshTokenExpiration;
+    @Value("${jwt.refresh.expiration}")
+    private int refreshExpirationInMs;
     
-    private final RSAPrivateKey privateKey;
-    private final RSAPublicKey publicKey;
-    
-    public String generateAccessToken(User user) {
-        Date expiryDate = new Date(System.currentTimeMillis() + accessTokenExpiration * 1000L);
+    public String generateToken(Authentication authentication) {
+        UserPrincipal userPrincipal = (UserPrincipal) authentication.getPrincipal();
+        Date expiryDate = new Date(System.currentTimeMillis() + jwtExpirationInMs);
         
         return Jwts.builder()
-            .setSubject(user.getUserId().toString())
+            .setSubject(userPrincipal.getId().toString())
             .setIssuedAt(new Date())
             .setExpiration(expiryDate)
-            .claim("email", user.getEmail())
-            .claim("role", user.getRole().name())
-            .claim("type", "access")
-            .signWith(privateKey, SignatureAlgorithm.RS256)
+            .claim("role", userPrincipal.getRole())
+            .claim("email", userPrincipal.getEmail())
+            .signWith(SignatureAlgorithm.HS512, jwtSecret)
             .compact();
     }
     
-    public String generateRefreshToken(User user) {
-        Date expiryDate = new Date(System.currentTimeMillis() + refreshTokenExpiration * 1000L);
+    public String generateRefreshToken(UUID userId) {
+        Date expiryDate = new Date(System.currentTimeMillis() + refreshExpirationInMs);
         
         return Jwts.builder()
-            .setSubject(user.getUserId().toString())
+            .setSubject(userId.toString())
             .setIssuedAt(new Date())
             .setExpiration(expiryDate)
             .claim("type", "refresh")
-            .signWith(privateKey, SignatureAlgorithm.RS256)
+            .signWith(SignatureAlgorithm.HS512, jwtSecret)
             .compact();
     }
+}
+```
+
+#### Input Validation
+```java
+@RestControllerAdvice
+public class GlobalExceptionHandler {
     
-    public boolean validateToken(String token) {
-        try {
-            Jwts.parserBuilder()
-                .setSigningKey(publicKey)
-                .build()
-                .parseClaimsJws(token);
-            return true;
-        } catch (JwtException | IllegalArgumentException e) {
-            return false;
-        }
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponse> handleValidationExceptions(
+            MethodArgumentNotValidException ex) {
+        
+        Map<String, String> errors = new HashMap<>();
+        ex.getBindingResult().getAllErrors().forEach((error) -> {
+            String fieldName = ((FieldError) error).getField();
+            String errorMessage = error.getDefaultMessage();
+            errors.put(fieldName, errorMessage);
+        });
+        
+        ErrorResponse errorResponse = ErrorResponse.builder()
+            .timestamp(LocalDateTime.now())
+            .status(HttpStatus.BAD_REQUEST.value())
+            .error("Validation Failed")
+            .message("Invalid input data")
+            .details(errors)
+            .build();
+            
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
+    }
+    
+    @ExceptionHandler(SQLInjectionAttemptException.class)
+    public ResponseEntity<ErrorResponse> handleSQLInjectionAttempt(
+            SQLInjectionAttemptException ex, HttpServletRequest request) {
+        
+        // Log security incident
+        securityLogger.warn("SQL injection attempt detected from IP: {} on endpoint: {}", 
+            getClientIpAddress(request), request.getRequestURI());
+        
+        ErrorResponse errorResponse = ErrorResponse.builder()
+            .timestamp(LocalDateTime.now())
+            .status(HttpStatus.BAD_REQUEST.value())
+            .error("Invalid Request")
+            .message("Request contains invalid characters")
+            .build();
+            
+        return new ResponseEntity<>(errorResponse, HttpStatus.BAD_REQUEST);
     }
 }
 ```
 
-### 4.2 Input Validation
+### Monitoring and Observability
+
+#### Application Metrics
 ```java
 @Component
-public class InputValidator {
+public class CustomMetrics {
     
-    private static final Pattern EMAIL_PATTERN = Pattern.compile(
-        "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
-    );
+    private final Counter orderCreatedCounter;
+    private final Timer paymentProcessingTimer;
+    private final Gauge activeUsersGauge;
     
-    private static final Pattern PASSWORD_PATTERN = Pattern.compile(
-        "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[@$!%*?&])[A-Za-z\\d@$!%*?&]{8,}$"
-    );
-    
-    public void validateUserRegistration(UserRegistrationRequest request) {
-        List<String> errors = new ArrayList<>();
-        
-        // Email validation
-        if (!EMAIL_PATTERN.matcher(request.getEmail()).matches()) {
-            errors.add("Invalid email format");
-        }
-        
-        // Password validation
-        if (!PASSWORD_PATTERN.matcher(request.getPassword()).matches()) {
-            errors.add("Password must contain at least 8 characters with uppercase, lowercase, digit and special character");
-        }
-        
-        // Name validation
-        if (request.getFirstName().length() > 100) {
-            errors.add("First name cannot exceed 100 characters");
-        }
-        
-        if (containsHtmlTags(request.getFirstName()) || containsHtmlTags(request.getLastName())) {
-            errors.add("Names cannot contain HTML tags");
-        }
-        
-        if (!errors.isEmpty()) {
-            throw new ValidationException(errors);
-        }
+    public CustomMetrics(MeterRegistry meterRegistry) {
+        this.orderCreatedCounter = Counter.builder("orders.created")
+            .description("Number of orders created")
+            .tag("service", "order-service")
+            .register(meterRegistry);
+            
+        this.paymentProcessingTimer = Timer.builder("payment.processing.time")
+            .description("Payment processing time")
+            .tag("service", "payment-service")
+            .register(meterRegistry);
+            
+        this.activeUsersGauge = Gauge.builder("users.active")
+            .description("Number of active users")
+            .tag("service", "user-service")
+            .register(meterRegistry, this, CustomMetrics::getActiveUserCount);
     }
     
-    private boolean containsHtmlTags(String input) {
-        return input != null && input.matches(".*<[^>]+>.*");
+    public void incrementOrderCreated() {
+        orderCreatedCounter.increment();
+    }
+    
+    public Timer.Sample startPaymentTimer() {
+        return Timer.start();
+    }
+    
+    public void recordPaymentTime(Timer.Sample sample) {
+        sample.stop(paymentProcessingTimer);
+    }
+    
+    private double getActiveUserCount() {
+        return userService.getActiveUserCount();
     }
 }
 ```
 
-### 4.3 Data Encryption
+#### Health Checks
 ```java
 @Component
-public class EncryptionService {
+public class CustomHealthIndicator implements HealthIndicator {
     
-    @Value("${encryption.key}")
-    private String encryptionKey;
+    @Autowired
+    private DataSource dataSource;
     
-    private final AESUtil aesUtil;
+    @Autowired
+    private RedisTemplate<String, Object> redisTemplate;
     
-    public String encryptSensitiveData(String data) {
+    @Override
+    public Health health() {
+        Health.Builder builder = new Health.Builder();
+        
         try {
-            return aesUtil.encrypt(data, encryptionKey);
+            // Check database connectivity
+            try (Connection connection = dataSource.getConnection()) {
+                if (connection.isValid(5)) {
+                    builder.withDetail("database", "UP");
+                } else {
+                    builder.down().withDetail("database", "Connection invalid");
+                }
+            }
+            
+            // Check Redis connectivity
+            try {
+                redisTemplate.opsForValue().get("health-check");
+                builder.withDetail("redis", "UP");
+            } catch (Exception e) {
+                builder.down().withDetail("redis", "Connection failed: " + e.getMessage());
+            }
+            
+            // Check external services
+            checkExternalServices(builder);
+            
+            return builder.up().build();
+            
         } catch (Exception e) {
-            throw new EncryptionException("Failed to encrypt data", e);
+            return builder.down().withException(e).build();
         }
     }
     
-    public String decryptSensitiveData(String encryptedData) {
+    private void checkExternalServices(Health.Builder builder) {
+        // Check payment gateway
         try {
-            return aesUtil.decrypt(encryptedData, encryptionKey);
+            paymentGatewayHealthCheck();
+            builder.withDetail("payment-gateway", "UP");
         } catch (Exception e) {
-            throw new EncryptionException("Failed to decrypt data", e);
+            builder.withDetail("payment-gateway", "DOWN: " + e.getMessage());
         }
-    }
-}
-
-@Component
-public class AESUtil {
-    
-    private static final String ALGORITHM = "AES/GCM/NoPadding";
-    private static final int GCM_IV_LENGTH = 12;
-    private static final int GCM_TAG_LENGTH = 16;
-    
-    public String encrypt(String plainText, String key) throws Exception {
-        SecretKeySpec secretKey = new SecretKeySpec(key.getBytes(), "AES");
         
-        byte[] iv = new byte[GCM_IV_LENGTH];
-        SecureRandom.getInstanceStrong().nextBytes(iv);
-        
-        Cipher cipher = Cipher.getInstance(ALGORITHM);
-        GCMParameterSpec parameterSpec = new GCMParameterSpec(GCM_TAG_LENGTH * 8, iv);
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey, parameterSpec);
-        
-        byte[] encryptedText = cipher.doFinal(plainText.getBytes());
-        
-        ByteBuffer byteBuffer = ByteBuffer.allocate(4 + iv.length + encryptedText.length);
-        byteBuffer.putInt(iv.length);
-        byteBuffer.put(iv);
-        byteBuffer.put(encryptedText);
-        
-        return Base64.getEncoder().encodeToString(byteBuffer.array());
-    }
-    
-    public String decrypt(String encryptedText, String key) throws Exception {
-        SecretKeySpec secretKey = new SecretKeySpec(key.getBytes(), "AES");
-        
-        ByteBuffer byteBuffer = ByteBuffer.wrap(Base64.getDecoder().decode(encryptedText));
-        
-        int ivLength = byteBuffer.getInt();
-        byte[] iv = new byte[ivLength];
-        byteBuffer.get(iv);
-        
-        byte[] cipherText = new byte[byteBuffer.remaining()];
-        byteBuffer.get(cipherText);
-        
-        Cipher cipher = Cipher.getInstance(ALGORITHM);
-        GCMParameterSpec parameterSpec = new GCMParameterSpec(GCM_TAG_LENGTH * 8, iv);
-        cipher.init(Cipher.DECRYPT_MODE, secretKey, parameterSpec);
-        
-        byte[] plainText = cipher.doFinal(cipherText);
-        
-        return new String(plainText);
+        // Check email service
+        try {
+            emailServiceHealthCheck();
+            builder.withDetail("email-service", "UP");
+        } catch (Exception e) {
+            builder.withDetail("email-service", "DOWN: " + e.getMessage());
+        }
     }
 }
 ```
 
-## 5. Deployment Configuration
+### Error Handling and Circuit Breaker
 
-### 5.1 Docker Configuration
+#### Hystrix Configuration
+```java
+@Component
+public class ProductServiceClient {
+    
+    @Autowired
+    private RestTemplate restTemplate;
+    
+    @HystrixCommand(
+        fallbackMethod = "getProductFallback",
+        commandProperties = {
+            @HystrixProperty(name = "execution.isolation.thread.timeoutInMilliseconds", value = "3000"),
+            @HystrixProperty(name = "circuitBreaker.requestVolumeThreshold", value = "10"),
+            @HystrixProperty(name = "circuitBreaker.errorThresholdPercentage", value = "50"),
+            @HystrixProperty(name = "circuitBreaker.sleepWindowInMilliseconds", value = "10000")
+        }
+    )
+    public Product getProduct(UUID productId) {
+        String url = "http://product-service/api/v1/products/" + productId;
+        return restTemplate.getForObject(url, Product.class);
+    }
+    
+    public Product getProductFallback(UUID productId) {
+        // Return cached product or default product
+        return productCacheService.getCachedProduct(productId)
+            .orElse(Product.builder()
+                .productId(productId)
+                .name("Product Temporarily Unavailable")
+                .description("This product information is temporarily unavailable")
+                .price(BigDecimal.ZERO)
+                .isActive(false)
+                .build());
+    }
+}
+```
+
+### Data Validation and Sanitization
+
+#### Input Validation
+```java
+public class ProductCreationRequest {
+    
+    @NotBlank(message = "Product name is required")
+    @Size(min = 3, max = 255, message = "Product name must be between 3 and 255 characters")
+    @Pattern(regexp = "^[a-zA-Z0-9\\s\\-_]+$", message = "Product name contains invalid characters")
+    private String name;
+    
+    @NotBlank(message = "Product description is required")
+    @Size(min = 10, max = 5000, message = "Product description must be between 10 and 5000 characters")
+    private String description;
+    
+    @NotNull(message = "Price is required")
+    @DecimalMin(value = "0.01", message = "Price must be greater than 0")
+    @DecimalMax(value = "999999.99", message = "Price must be less than 1,000,000")
+    private BigDecimal price;
+    
+    @NotNull(message = "Category is required")
+    private UUID categoryId;
+    
+    @Min(value = 0, message = "Inventory quantity cannot be negative")
+    @Max(value = 999999, message = "Inventory quantity cannot exceed 999,999")
+    private Integer inventoryQuantity;
+    
+    @Valid
+    @Size(max = 10, message = "Maximum 10 images allowed")
+    private List<ProductImageRequest> images;
+}
+
+@Component
+public class InputSanitizer {
+    
+    private static final Pattern SQL_INJECTION_PATTERN = Pattern.compile(
+        "(?i)(union|select|insert|update|delete|drop|create|alter|exec|execute|script|javascript|vbscript)"
+    );
+    
+    private static final Pattern XSS_PATTERN = Pattern.compile(
+        "(?i)<script[^>]*>.*?</script>|javascript:|vbscript:|onload=|onerror="
+    );
+    
+    public String sanitizeInput(String input) {
+        if (input == null) {
+            return null;
+        }
+        
+        // Check for SQL injection attempts
+        if (SQL_INJECTION_PATTERN.matcher(input).find()) {
+            throw new SQLInjectionAttemptException("Input contains potentially malicious SQL keywords");
+        }
+        
+        // Check for XSS attempts
+        if (XSS_PATTERN.matcher(input).find()) {
+            throw new XSSAttemptException("Input contains potentially malicious scripts");
+        }
+        
+        // HTML encode the input
+        return HtmlUtils.htmlEscape(input);
+    }
+}
+```
+
+### Deployment Configuration
+
+#### Docker Configuration
 ```dockerfile
 # User Service Dockerfile
 FROM openjdk:17-jre-slim
 
-WORKDIR /app
+ARG JAR_FILE=target/*.jar
+COPY ${JAR_FILE} app.jar
 
-COPY target/user-service-1.0.0.jar app.jar
+# Create non-root user
+RUN addgroup --system spring && adduser --system spring --ingroup spring
+USER spring:spring
 
-EXPOSE 8080
+EXPOSE 8081
 
-ENV JAVA_OPTS="-Xmx512m -Xms256m"
-ENV SPRING_PROFILES_ACTIVE=production
-
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8080/actuator/health || exit 1
-
-CMD ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
+ENTRYPOINT ["java", "-jar", "/app.jar"]
 ```
 
-### 5.2 Kubernetes Deployment
+#### Kubernetes Deployment
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -1176,12 +1145,12 @@ spec:
     spec:
       containers:
       - name: user-service
-        image: davtest12/user-service:1.0.0
+        image: davtest12/user-service:latest
         ports:
-        - containerPort: 8080
+        - containerPort: 8081
         env:
         - name: SPRING_PROFILES_ACTIVE
-          value: "kubernetes"
+          value: "production"
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef:
@@ -1197,28 +1166,23 @@ spec:
             secretKeyRef:
               name: database-secret
               key: password
-        - name: JWT_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: jwt-secret
-              key: private-key
         resources:
           requests:
-            memory: "256Mi"
+            memory: "512Mi"
             cpu: "250m"
           limits:
-            memory: "512Mi"
+            memory: "1Gi"
             cpu: "500m"
         livenessProbe:
           httpGet:
-            path: /actuator/health/liveness
-            port: 8080
+            path: /actuator/health
+            port: 8081
           initialDelaySeconds: 30
           periodSeconds: 10
         readinessProbe:
           httpGet:
             path: /actuator/health/readiness
-            port: 8080
+            port: 8081
           initialDelaySeconds: 5
           periodSeconds: 5
 ---
@@ -1232,126 +1196,202 @@ spec:
   ports:
     - protocol: TCP
       port: 80
-      targetPort: 8080
+      targetPort: 8081
   type: ClusterIP
 ```
 
-### 5.3 Database Migration Scripts
+### Performance Optimization
+
+#### Database Optimization
 ```sql
--- V1__Initial_Schema.sql
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+-- Partitioning for large tables
+CREATE TABLE orders_2024 PARTITION OF orders
+FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
 
--- Users table
-CREATE TABLE users (
-    user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email VARCHAR(255) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    first_name VARCHAR(100) NOT NULL,
-    last_name VARCHAR(100) NOT NULL,
-    phone VARCHAR(20),
-    role VARCHAR(20) DEFAULT 'CONSUMER' CHECK (role IN ('CONSUMER', 'SELLER', 'ADMIN')),
-    is_active BOOLEAN DEFAULT true,
-    email_verified BOOLEAN DEFAULT false,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_login TIMESTAMP,
-    failed_login_attempts INTEGER DEFAULT 0,
-    account_locked_until TIMESTAMP
-);
+-- Materialized views for reporting
+CREATE MATERIALIZED VIEW order_summary AS
+SELECT 
+    DATE_TRUNC('day', created_at) as order_date,
+    COUNT(*) as total_orders,
+    SUM(total_amount) as total_revenue,
+    AVG(total_amount) as avg_order_value
+FROM orders 
+WHERE status != 'CANCELLED'
+GROUP BY DATE_TRUNC('day', created_at);
 
--- Indexes
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_role ON users(role);
-CREATE INDEX idx_users_active ON users(is_active);
-
--- Trigger for updated_at
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
+-- Refresh materialized view periodically
+CREATE OR REPLACE FUNCTION refresh_order_summary()
+RETURNS void AS $$
 BEGIN
-    NEW.updated_at = CURRENT_TIMESTAMP;
-    RETURN NEW;
+    REFRESH MATERIALIZED VIEW CONCURRENTLY order_summary;
 END;
-$$ language 'plpgsql';
-
-CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+$$ LANGUAGE plpgsql;
 ```
 
-## 6. Monitoring and Observability
+#### Connection Pool Tuning
+```yaml
+spring:
+  datasource:
+    hikari:
+      # Core pool settings
+      minimum-idle: 5
+      maximum-pool-size: 20
+      
+      # Connection timeout settings
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      
+      # Performance settings
+      leak-detection-threshold: 60000
+      
+      # Pool name for monitoring
+      pool-name: DavTest12-CP
+      
+      # Connection test query
+      connection-test-query: SELECT 1
+```
 
-### 6.1 Application Metrics
+### Compliance and Audit
+
+#### Audit Logging
 ```java
+@Entity
+@Table(name = "audit_logs")
+public class AuditLog {
+    @Id
+    @GeneratedValue
+    private UUID auditId;
+    
+    @Column(nullable = false)
+    private UUID userId;
+    
+    @Column(nullable = false)
+    private String action;
+    
+    @Column(nullable = false)
+    private String entityType;
+    
+    @Column
+    private String entityId;
+    
+    @Column(columnDefinition = "TEXT")
+    private String oldValues;
+    
+    @Column(columnDefinition = "TEXT")
+    private String newValues;
+    
+    @Column(nullable = false)
+    private String ipAddress;
+    
+    @Column(nullable = false)
+    private String userAgent;
+    
+    @Column(nullable = false)
+    private LocalDateTime timestamp;
+    
+    @Column
+    private String sessionId;
+}
+
+@Aspect
 @Component
-public class MetricsConfiguration {
+public class AuditAspect {
     
-    @Bean
-    public TimedAspect timedAspect(MeterRegistry registry) {
-        return new TimedAspect(registry);
-    }
+    @Autowired
+    private AuditLogService auditLogService;
     
-    @Bean
-    public CountedAspect countedAspect(MeterRegistry registry) {
-        return new CountedAspect(registry);
-    }
-    
-    @EventListener
-    public void handleUserRegistration(UserRegisteredEvent event) {
-        Metrics.counter("user.registration", "role", event.getUser().getRole().name())
-               .increment();
-    }
-    
-    @EventListener
-    public void handleOrderCreated(OrderCreatedEvent event) {
-        Metrics.counter("order.created")
-               .increment();
-        
-        Metrics.gauge("order.value", event.getOrder().getTotalAmount().doubleValue());
+    @AfterReturning(pointcut = "@annotation(auditable)", returning = "result")
+    public void auditMethod(JoinPoint joinPoint, Auditable auditable, Object result) {
+        try {
+            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+            if (authentication != null && authentication.isAuthenticated()) {
+                UserPrincipal user = (UserPrincipal) authentication.getPrincipal();
+                
+                AuditLog auditLog = AuditLog.builder()
+                    .userId(user.getId())
+                    .action(auditable.action())
+                    .entityType(auditable.entityType())
+                    .entityId(extractEntityId(result))
+                    .newValues(serializeObject(result))
+                    .ipAddress(getClientIpAddress())
+                    .userAgent(getUserAgent())
+                    .timestamp(LocalDateTime.now())
+                    .sessionId(getSessionId())
+                    .build();
+                    
+                auditLogService.saveAuditLog(auditLog);
+            }
+        } catch (Exception e) {
+            // Log error but don't fail the main operation
+            logger.error("Failed to create audit log", e);
+        }
     }
 }
 ```
 
-### 6.2 Logging Configuration
-```xml
-<!-- logback-spring.xml -->
-<configuration>
-    <springProfile name="!local">
-        <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
-            <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
-                <providers>
-                    <timestamp/>
-                    <logLevel/>
-                    <loggerName/>
-                    <mdc/>
-                    <arguments/>
-                    <message/>
-                    <stackTrace/>
-                </providers>
-            </encoder>
-        </appender>
-    </springProfile>
+#### GDPR Compliance
+```java
+@Service
+public class GdprService {
     
-    <springProfile name="local">
-        <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
-            <encoder>
-                <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
-            </encoder>
-        </appender>
-    </springProfile>
+    @Autowired
+    private UserRepository userRepository;
     
-    <logger name="com.davtest12" level="INFO"/>
-    <logger name="org.springframework.security" level="DEBUG"/>
-    <logger name="org.springframework.web" level="DEBUG"/>
+    @Autowired
+    private OrderRepository orderRepository;
     
-    <root level="INFO">
-        <appender-ref ref="STDOUT"/>
-    </root>
-</configuration>
+    @Autowired
+    private AuditLogRepository auditLogRepository;
+    
+    public PersonalDataExport exportUserData(UUID userId) {
+        User user = userRepository.findById(userId)
+            .orElseThrow(() -> new UserNotFoundException("User not found"));
+            
+        List<Order> orders = orderRepository.findByUserId(userId);
+        List<AuditLog> auditLogs = auditLogRepository.findByUserId(userId);
+        
+        return PersonalDataExport.builder()
+            .userData(sanitizeUserData(user))
+            .orderData(sanitizeOrderData(orders))
+            .auditData(sanitizeAuditData(auditLogs))
+            .exportDate(LocalDateTime.now())
+            .build();
+    }
+    
+    @Transactional
+    public void deleteUserData(UUID userId) {
+        User user = userRepository.findById(userId)
+            .orElseThrow(() -> new UserNotFoundException("User not found"));
+            
+        // Anonymize orders (keep for business records)
+        List<Order> orders = orderRepository.findByUserId(userId);
+        orders.forEach(order -> {
+            order.setUserId(null);
+            order.setShippingAddress(anonymizeAddress(order.getShippingAddress()));
+            order.setBillingAddress(anonymizeAddress(order.getBillingAddress()));
+        });
+        orderRepository.saveAll(orders);
+        
+        // Delete personal data
+        userRepository.delete(user);
+        
+        // Create deletion audit log
+        AuditLog deletionLog = AuditLog.builder()
+            .userId(userId)
+            .action("DATA_DELETION")
+            .entityType("USER")
+            .entityId(userId.toString())
+            .timestamp(LocalDateTime.now())
+            .build();
+        auditLogRepository.save(deletionLog);
+    }
+}
 ```
 
-## 7. Testing Strategy
+## Testing Strategy
 
-### 7.1 Unit Test Example
+### Unit Testing
 ```java
 @ExtendWith(MockitoExtension.class)
 class UserServiceTest {
@@ -1363,7 +1403,7 @@ class UserServiceTest {
     private PasswordEncoder passwordEncoder;
     
     @Mock
-    private JwtTokenProvider jwtTokenProvider;
+    private EmailService emailService;
     
     @InjectMocks
     private UserService userService;
@@ -1373,25 +1413,29 @@ class UserServiceTest {
         // Given
         UserRegistrationRequest request = UserRegistrationRequest.builder()
             .email("test@example.com")
-            .password("Password123!")
+            .password("password123")
             .firstName("John")
             .lastName("Doe")
             .build();
-        
+            
+        User savedUser = User.builder()
+            .userId(UUID.randomUUID())
+            .email(request.getEmail())
+            .firstName(request.getFirstName())
+            .lastName(request.getLastName())
+            .build();
+            
         when(userRepository.existsByEmail(request.getEmail())).thenReturn(false);
         when(passwordEncoder.encode(request.getPassword())).thenReturn("hashedPassword");
-        when(userRepository.save(any(User.class))).thenReturn(createMockUser());
+        when(userRepository.save(any(User.class))).thenReturn(savedUser);
         
         // When
         UserRegistrationResponse response = userService.registerUser(request);
         
         // Then
-        assertThat(response.getUserId()).isNotNull();
-        assertThat(response.getMessage()).contains("registered successfully");
-        
-        verify(userRepository).existsByEmail(request.getEmail());
-        verify(passwordEncoder).encode(request.getPassword());
-        verify(userRepository).save(any(User.class));
+        assertThat(response.getUserId()).isEqualTo(savedUser.getUserId());
+        assertThat(response.getEmail()).isEqualTo(savedUser.getEmail());
+        verify(emailService).sendVerificationEmail(savedUser);
     }
     
     @Test
@@ -1399,29 +1443,40 @@ class UserServiceTest {
         // Given
         UserRegistrationRequest request = UserRegistrationRequest.builder()
             .email("existing@example.com")
-            .password("Password123!")
+            .password("password123")
             .firstName("John")
             .lastName("Doe")
             .build();
-        
+            
         when(userRepository.existsByEmail(request.getEmail())).thenReturn(true);
         
         // When & Then
         assertThatThrownBy(() -> userService.registerUser(request))
             .isInstanceOf(EmailAlreadyExistsException.class)
-            .hasMessage("Email already registered");
+            .hasMessage("Email already exists");
+            
+        verify(userRepository, never()).save(any(User.class));
+        verify(emailService, never()).sendVerificationEmail(any(User.class));
     }
 }
 ```
 
-### 7.2 Integration Test Example
+### Integration Testing
 ```java
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@TestPropertySource(properties = {
-    "spring.datasource.url=jdbc:h2:mem:testdb",
-    "spring.jpa.hibernate.ddl-auto=create-drop"
-})
+@TestPropertySource(locations = "classpath:application-test.properties")
+@Testcontainers
 class UserControllerIntegrationTest {
+    
+    @Container
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15")
+            .withDatabaseName("davtest12_test")
+            .withUsername("test")
+            .withPassword("test");
+    
+    @Container
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7")
+            .withExposedPorts(6379);
     
     @Autowired
     private TestRestTemplate restTemplate;
@@ -1429,251 +1484,114 @@ class UserControllerIntegrationTest {
     @Autowired
     private UserRepository userRepository;
     
+    @DynamicPropertySource
+    static void configureProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.username", postgres::getUsername);
+        registry.add("spring.datasource.password", postgres::getPassword);
+        registry.add("spring.redis.host", redis::getHost);
+        registry.add("spring.redis.port", () -> redis.getMappedPort(6379));
+    }
+    
     @Test
-    void shouldRegisterUserSuccessfully() {
+    void shouldRegisterUserEndToEnd() {
         // Given
         UserRegistrationRequest request = UserRegistrationRequest.builder()
-            .email("integration@test.com")
-            .password("Password123!")
+            .email("integration@example.com")
+            .password("SecurePass123!")
             .firstName("Integration")
             .lastName("Test")
             .build();
         
         // When
         ResponseEntity<UserRegistrationResponse> response = restTemplate.postForEntity(
-            "/api/v1/users/register",
-            request,
-            UserRegistrationResponse.class
-        );
+            "/api/v1/users/register", request, UserRegistrationResponse.class);
         
         // Then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(response.getBody().getUserId()).isNotNull();
+        assertThat(response.getBody().getEmail()).isEqualTo(request.getEmail());
         
-        // Verify database
+        // Verify user saved in database
         Optional<User> savedUser = userRepository.findByEmail(request.getEmail());
         assertThat(savedUser).isPresent();
-        assertThat(savedUser.get().getFirstName()).isEqualTo("Integration");
+        assertThat(savedUser.get().getFirstName()).isEqualTo(request.getFirstName());
     }
 }
 ```
 
-## 8. Performance Optimization
-
-### 8.1 Database Optimization
-```sql
--- Performance indexes
-CREATE INDEX CONCURRENTLY idx_products_search 
-ON products USING gin(to_tsvector('english', name || ' ' || description));
-
-CREATE INDEX CONCURRENTLY idx_orders_user_status 
-ON orders(user_id, status) 
-WHERE status IN ('PENDING', 'CONFIRMED');
-
-CREATE INDEX CONCURRENTLY idx_products_category_active 
-ON products(category_id, is_active) 
-WHERE is_active = true;
-
--- Partitioning for large tables
-CREATE TABLE order_items_2024 PARTITION OF order_items 
-FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
-```
-
-### 8.2 Caching Strategy
-```java
-@Service
-public class ProductCacheService {
-    
-    @Cacheable(value = "products", key = "#productId")
-    public ProductDto getProduct(String productId) {
-        return productRepository.findById(UUID.fromString(productId))
-            .map(ProductDto::fromEntity)
-            .orElseThrow(() -> new ProductNotFoundException("Product not found"));
-    }
-    
-    @Cacheable(value = "productSearch", key = "#request.hashCode()")
-    public ProductSearchResponse searchProducts(ProductSearchRequest request) {
-        return elasticsearchService.searchProducts(request);
-    }
-    
-    @CacheEvict(value = "products", key = "#productId")
-    public void evictProductCache(String productId) {
-        // Cache eviction handled by annotation
-    }
-    
-    @CacheEvict(value = "productSearch", allEntries = true)
-    public void evictSearchCache() {
-        // Evict all search cache entries
-    }
-}
-```
-
-## 9. Error Handling and Resilience
-
-### 9.1 Global Exception Handler
-```java
-@ControllerAdvice
-public class GlobalExceptionHandler {
-    
-    private static final Logger logger = LoggerFactory.getLogger(GlobalExceptionHandler.class);
-    
-    @ExceptionHandler(ValidationException.class)
-    public ResponseEntity<ErrorResponse> handleValidationException(ValidationException e) {
-        logger.warn("Validation error: {}", e.getErrors());
-        
-        ErrorResponse errorResponse = ErrorResponse.builder()
-            .code("VALIDATION_ERROR")
-            .message("Input validation failed")
-            .details(e.getErrors())
-            .timestamp(LocalDateTime.now())
-            .build();
-        
-        return ResponseEntity.badRequest().body(errorResponse);
-    }
-    
-    @ExceptionHandler(ResourceNotFoundException.class)
-    public ResponseEntity<ErrorResponse> handleResourceNotFound(ResourceNotFoundException e) {
-        logger.warn("Resource not found: {}", e.getMessage());
-        
-        ErrorResponse errorResponse = ErrorResponse.builder()
-            .code("RESOURCE_NOT_FOUND")
-            .message(e.getMessage())
-            .timestamp(LocalDateTime.now())
-            .build();
-        
-        return ResponseEntity.notFound().build();
-    }
-    
-    @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorResponse> handleGenericException(Exception e) {
-        logger.error("Unexpected error occurred", e);
-        
-        ErrorResponse errorResponse = ErrorResponse.builder()
-            .code("INTERNAL_SERVER_ERROR")
-            .message("An unexpected error occurred")
-            .timestamp(LocalDateTime.now())
-            .build();
-        
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
-    }
-}
-```
-
-### 9.2 Circuit Breaker Implementation
+### Performance Testing
 ```java
 @Component
-public class PaymentGatewayClient {
-    
-    private final CircuitBreaker circuitBreaker;
-    
-    public PaymentGatewayClient() {
-        this.circuitBreaker = CircuitBreaker.ofDefaults("paymentGateway");
-        
-        circuitBreaker.getEventPublisher()
-            .onStateTransition(event -> 
-                logger.info("Circuit breaker state transition: {}", event));
-    }
-    
-    public PaymentResponse processPayment(PaymentRequest request) {
-        Supplier<PaymentResponse> decoratedSupplier = CircuitBreaker
-            .decorateSupplier(circuitBreaker, () -> {
-                return paymentGateway.processPayment(request);
-            });
-        
-        return Try.ofSupplier(decoratedSupplier)
-            .recover(throwable -> {
-                logger.error("Payment processing failed, using fallback", throwable);
-                return PaymentResponse.builder()
-                    .status(PaymentStatus.FAILED)
-                    .message("Payment service temporarily unavailable")
-                    .build();
-            })
-            .get();
-    }
-}
-```
-
-## 10. Compliance and Governance
-
-### 10.1 Audit Logging
-```java
-@Aspect
-@Component
-public class AuditAspect {
+public class PerformanceTestRunner {
     
     @Autowired
-    private AuditLogRepository auditLogRepository;
+    private ProductService productService;
     
-    @Around("@annotation(Auditable)")
-    public Object auditMethodExecution(ProceedingJoinPoint joinPoint) throws Throwable {
-        String methodName = joinPoint.getSignature().getName();
-        String className = joinPoint.getTarget().getClass().getSimpleName();
-        Object[] args = joinPoint.getArgs();
+    @Test
+    void shouldHandleHighVolumeProductSearch() {
+        // Given
+        int numberOfThreads = 100;
+        int requestsPerThread = 10;
+        CountDownLatch latch = new CountDownLatch(numberOfThreads);
+        List<Long> responseTimes = Collections.synchronizedList(new ArrayList<>());
         
-        String userId = getCurrentUserId();
-        String sessionId = getCurrentSessionId();
+        ExecutorService executor = Executors.newFixedThreadPool(numberOfThreads);
         
-        AuditLog auditLog = AuditLog.builder()
-            .userId(userId)
-            .sessionId(sessionId)
-            .action(className + "." + methodName)
-            .parameters(objectMapper.writeValueAsString(args))
-            .timestamp(LocalDateTime.now())
-            .ipAddress(getCurrentIpAddress())
-            .userAgent(getCurrentUserAgent())
-            .build();
-        
-        try {
-            Object result = joinPoint.proceed();
-            auditLog.setStatus("SUCCESS");
-            auditLog.setResult(objectMapper.writeValueAsString(result));
-            return result;
-        } catch (Exception e) {
-            auditLog.setStatus("FAILURE");
-            auditLog.setErrorMessage(e.getMessage());
-            throw e;
-        } finally {
-            auditLogRepository.save(auditLog);
+        // When
+        for (int i = 0; i < numberOfThreads; i++) {
+            executor.submit(() -> {
+                try {
+                    for (int j = 0; j < requestsPerThread; j++) {
+                        long startTime = System.currentTimeMillis();
+                        
+                        ProductSearchRequest request = ProductSearchRequest.builder()
+                            .query("laptop")
+                            .limit(20)
+                            .offset(0)
+                            .build();
+                            
+                        productService.searchProducts(request);
+                        
+                        long responseTime = System.currentTimeMillis() - startTime;
+                        responseTimes.add(responseTime);
+                    }
+                } finally {
+                    latch.countDown();
+                }
+            });
         }
+        
+        // Then
+        assertThat(latch.await(30, TimeUnit.SECONDS)).isTrue();
+        
+        double averageResponseTime = responseTimes.stream()
+            .mapToLong(Long::longValue)
+            .average()
+            .orElse(0.0);
+            
+        long maxResponseTime = responseTimes.stream()
+            .mapToLong(Long::longValue)
+            .max()
+            .orElse(0L);
+            
+        // Verify performance requirements
+        assertThat(averageResponseTime).isLessThan(2000); // Average < 2 seconds
+        assertThat(maxResponseTime).isLessThan(5000); // Max < 5 seconds
+        
+        executor.shutdown();
     }
 }
 ```
 
-### 10.2 Data Retention Policy
-```java
-@Component
-public class DataRetentionService {
-    
-    @Scheduled(cron = "0 0 2 * * ?") // Daily at 2 AM
-    public void enforceDataRetention() {
-        LocalDateTime cutoffDate = LocalDateTime.now().minusYears(7);
-        
-        // Delete old user data for inactive accounts
-        List<User> inactiveUsers = userRepository.findInactiveUsersBefore(cutoffDate);
-        for (User user : inactiveUsers) {
-            anonymizeUserData(user);
-        }
-        
-        // Delete old audit logs
-        LocalDateTime auditCutoff = LocalDateTime.now().minusDays(90);
-        auditLogRepository.deleteByTimestampBefore(auditCutoff);
-        
-        // Archive old transaction data
-        LocalDateTime transactionCutoff = LocalDateTime.now().minusYears(10);
-        List<Payment> oldPayments = paymentRepository.findByCreatedAtBefore(transactionCutoff);
-        archiveService.archivePayments(oldPayments);
-        paymentRepository.deleteAll(oldPayments);
-    }
-    
-    private void anonymizeUserData(User user) {
-        user.setEmail("anonymized_" + user.getUserId() + "@deleted.com");
-        user.setFirstName("[DELETED]");
-        user.setLastName("[DELETED]");
-        user.setPhone(null);
-        user.setIsActive(false);
-        userRepository.save(user);
-    }
-}
-```
+## Conclusion
 
-This comprehensive Low-Level Design document provides detailed technical specifications for implementing the DavTest12 Online Shopping Platform, covering all aspects from component architecture to security, performance optimization, and compliance requirements.
+This Low-Level Design document provides comprehensive technical specifications for implementing the DavTest12 Online Shopping Platform. The design ensures:
+
+- **Scalability**: Microservices architecture with horizontal scaling capabilities
+- **Security**: PCI DSS compliance, data encryption, and comprehensive audit logging
+- **Performance**: Caching strategies, connection pooling, and performance monitoring
+- **Reliability**: Circuit breaker patterns, health checks, and error handling
+- **Compliance**: GDPR compliance, data retention policies, and audit trails
+- **Maintainability**: Clean code architecture, comprehensive testing, and monitoring
+
+The implementation follows enterprise-grade practices and provides a solid foundation for a production-ready e-commerce platform.
