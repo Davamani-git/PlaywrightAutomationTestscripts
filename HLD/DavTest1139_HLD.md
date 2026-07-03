@@ -1,4 +1,4 @@
-# DavTest1139 Online Shopping Platform - High-Level Design
+# DavTest1139 Online Shopping Platform - Domain Model and High-Level Design
 
 ## Domain Model Analysis
 
