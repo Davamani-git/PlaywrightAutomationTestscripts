@@ -1,54 +1,68 @@
-# Low-Level Design Document
+# Online Shopping Platform - Low-Level Design Document
 
-## E-Commerce Platform - Detailed Implementation Specifications
+## Application Type: DavTest12345
 
-### 1. Component Specifications
+### DETAILED COMPONENT SPECIFICATIONS
 
-#### 1.1 API Gateway Component
+## 1. USER SERVICE - DETAILED DESIGN
 
-**Technology Stack:**
-- Kong Gateway / AWS API Gateway
-- Redis for rate limiting
-- JWT for authentication
+### 1.1 User Authentication Module
 
-**Implementation Details:**
-```yaml
-api_gateway:
-  routes:
-    - path: /api/v1/users/*
-      service: user-service
-      plugins:
-        - rate-limiting: 1000/hour
-        - jwt-auth
-        - cors
-    - path: /api/v1/products/*
-      service: product-service
-      plugins:
-        - rate-limiting: 2000/hour
-        - cors
-    - path: /api/v1/orders/*
-      service: order-service
-      plugins:
-        - rate-limiting: 500/hour
-        - jwt-auth
-        - request-validator
+#### Class: UserAuthenticationService
+```java
+public class UserAuthenticationService {
+    private final JWTTokenManager tokenManager;
+    private final PasswordEncoder passwordEncoder;
+    private final UserRepository userRepository;
+    private final RedisTemplate<String, Object> redisTemplate;
+    
+    public AuthenticationResponse authenticate(LoginRequest request) {
+        // Input validation
+        validateLoginRequest(request);
+        
+        // Retrieve user from database
+        User user = userRepository.findByEmail(request.getEmail())
+            .orElseThrow(() -> new UserNotFoundException("Invalid credentials"));
+        
+        // Verify password
+        if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
+            logFailedAttempt(request.getEmail());
+            throw new InvalidCredentialsException("Invalid credentials");
+        }
+        
+        // Generate JWT tokens
+        String accessToken = tokenManager.generateAccessToken(user);
+        String refreshToken = tokenManager.generateRefreshToken(user);
+        
+        // Store refresh token in Redis
+        redisTemplate.opsForValue().set(
+            "refresh_token:" + user.getUserId(), 
+            refreshToken, 
+            Duration.ofDays(30)
+        );
+        
+        return AuthenticationResponse.builder()
+            .accessToken(accessToken)
+            .refreshToken(refreshToken)
+            .user(UserDTO.from(user))
+            .build();
+    }
+    
+    public void logout(String userId, String refreshToken) {
+        // Invalidate refresh token
+        redisTemplate.delete("refresh_token:" + userId);
+        
+        // Add access token to blacklist
+        redisTemplate.opsForValue().set(
+            "blacklist:" + refreshToken, 
+            "true", 
+            Duration.ofHours(24)
+        );
+    }
+}
 ```
 
-**Circuit Breaker Configuration:**
-```javascript
-const circuitBreakerOptions = {
-  timeout: 3000,
-  errorThresholdPercentage: 50,
-  resetTimeout: 30000,
-  requestVolumeThreshold: 10,
-  sleepWindow: 5000,
-  rollingCountTimeout: 10000
-};
-```
-
-#### 1.2 User Service Component
-
-**Database Schema:**
+#### Database Schema: users Table
 ```sql
 CREATE TABLE users (
     user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -56,1066 +70,1034 @@ CREATE TABLE users (
     password_hash VARCHAR(255) NOT NULL,
     first_name VARCHAR(100) NOT NULL,
     last_name VARCHAR(100) NOT NULL,
-    phone_number VARCHAR(20),
-    date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    phone VARCHAR(20),
+    address JSONB,
+    role user_role_enum DEFAULT 'CUSTOMER',
+    is_active BOOLEAN DEFAULT true,
+    email_verified BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_login TIMESTAMP,
-    is_active BOOLEAN DEFAULT TRUE,
-    user_type VARCHAR(20) CHECK (user_type IN ('Consumer', 'Seller', 'Admin')),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    failed_login_attempts INTEGER DEFAULT 0,
+    locked_until TIMESTAMP
 );
 
-CREATE TABLE profiles (
-    profile_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    address TEXT,
-    city VARCHAR(100),
-    state VARCHAR(100),
-    zip_code VARCHAR(20),
-    country VARCHAR(100),
-    preferences JSONB,
-    avatar_url VARCHAR(500),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+CREATE TYPE user_role_enum AS ENUM ('CUSTOMER', 'SELLER', 'ADMIN');
 
-CREATE TABLE roles (
-    role_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    role_name VARCHAR(50) UNIQUE NOT NULL,
-    permissions JSONB NOT NULL,
-    description TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE user_roles (
-    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    role_id UUID REFERENCES roles(role_id) ON DELETE CASCADE,
-    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (user_id, role_id)
-);
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_role ON users(role);
+CREATE INDEX idx_users_active ON users(is_active);
 ```
 
-**API Endpoints:**
-```javascript
-// User Registration
-POST /api/v1/users/register
-Content-Type: application/json
-{
-  "email": "user@example.com",
-  "password": "SecurePass123!",
-  "firstName": "John",
-  "lastName": "Doe",
-  "phoneNumber": "+1234567890",
-  "userType": "Consumer"
-}
+### 1.2 User Registration Module
 
-// User Authentication
-POST /api/v1/users/login
-Content-Type: application/json
-{
-  "email": "user@example.com",
-  "password": "SecurePass123!"
-}
-
-// Profile Management
-PUT /api/v1/users/{userId}/profile
-Authorization: Bearer {jwt_token}
-Content-Type: application/json
-{
-  "address": "123 Main St",
-  "city": "New York",
-  "state": "NY",
-  "zipCode": "10001",
-  "country": "USA",
-  "preferences": {
-    "notifications": true,
-    "theme": "dark"
-  }
-}
-```
-
-**Security Implementation:**
-```javascript
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
-const rateLimit = require('express-rate-limit');
-
-// Password hashing
-const hashPassword = async (password) => {
-  const saltRounds = 12;
-  return await bcrypt.hash(password, saltRounds);
-};
-
-// JWT token generation
-const generateTokens = (user) => {
-  const accessToken = jwt.sign(
-    { userId: user.user_id, email: user.email, userType: user.user_type },
-    process.env.JWT_SECRET,
-    { expiresIn: '15m' }
-  );
-  
-  const refreshToken = jwt.sign(
-    { userId: user.user_id },
-    process.env.JWT_REFRESH_SECRET,
-    { expiresIn: '7d' }
-  );
-  
-  return { accessToken, refreshToken };
-};
-
-// Rate limiting
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // limit each IP to 5 requests per windowMs
-  message: 'Too many login attempts, please try again later.'
-});
-```
-
-#### 1.3 Product Service Component
-
-**Database Schema:**
-```sql
-CREATE TABLE categories (
-    category_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR(100) NOT NULL,
-    description TEXT,
-    parent_category_id UUID REFERENCES categories(category_id),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE products (
-    product_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    seller_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    name VARCHAR(255) NOT NULL,
-    description TEXT,
-    price DECIMAL(10,2) NOT NULL CHECK (price >= 0),
-    stock_quantity INTEGER NOT NULL CHECK (stock_quantity >= 0),
-    category_id UUID REFERENCES categories(category_id),
-    image_urls JSONB,
-    is_active BOOLEAN DEFAULT TRUE,
-    date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    search_vector tsvector
-);
-
--- Full-text search index
-CREATE INDEX idx_products_search ON products USING GIN(search_vector);
-CREATE INDEX idx_products_category ON products(category_id);
-CREATE INDEX idx_products_seller ON products(seller_id);
-CREATE INDEX idx_products_price ON products(price);
-```
-
-**Search Implementation:**
-```javascript
-const searchProducts = async (query, filters = {}) => {
-  let sqlQuery = `
-    SELECT p.*, c.name as category_name,
-           ts_rank(p.search_vector, plainto_tsquery($1)) as rank
-    FROM products p
-    LEFT JOIN categories c ON p.category_id = c.category_id
-    WHERE p.is_active = true
-  `;
-  
-  const params = [query];
-  let paramIndex = 2;
-  
-  if (query) {
-    sqlQuery += ` AND p.search_vector @@ plainto_tsquery($1)`;
-  }
-  
-  if (filters.categoryId) {
-    sqlQuery += ` AND p.category_id = $${paramIndex}`;
-    params.push(filters.categoryId);
-    paramIndex++;
-  }
-  
-  if (filters.minPrice) {
-    sqlQuery += ` AND p.price >= $${paramIndex}`;
-    params.push(filters.minPrice);
-    paramIndex++;
-  }
-  
-  if (filters.maxPrice) {
-    sqlQuery += ` AND p.price <= $${paramIndex}`;
-    params.push(filters.maxPrice);
-    paramIndex++;
-  }
-  
-  sqlQuery += ` ORDER BY rank DESC, p.date_created DESC`;
-  sqlQuery += ` LIMIT ${filters.limit || 20} OFFSET ${filters.offset || 0}`;
-  
-  return await db.query(sqlQuery, params);
-};
-```
-
-#### 1.4 Cart Service Component
-
-**Database Schema:**
-```sql
-CREATE TABLE carts (
-    cart_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE cart_items (
-    cart_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    cart_id UUID REFERENCES carts(cart_id) ON DELETE CASCADE,
-    product_id UUID REFERENCES products(product_id) ON DELETE CASCADE,
-    quantity INTEGER NOT NULL CHECK (quantity > 0),
-    price_at_add DECIMAL(10,2) NOT NULL,
-    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(cart_id, product_id)
-);
-```
-
-**Redis Cache Implementation:**
-```javascript
-const redis = require('redis');
-const client = redis.createClient();
-
-class CartService {
-  async addToCart(userId, productId, quantity) {
-    const cacheKey = `cart:${userId}`;
+#### Class: UserRegistrationService
+```java
+public class UserRegistrationService {
+    private final UserRepository userRepository;
+    private final EmailService emailService;
+    private final PasswordEncoder passwordEncoder;
+    private final ValidationService validationService;
     
-    // Get current cart from cache
-    let cart = await client.get(cacheKey);
-    cart = cart ? JSON.parse(cart) : { items: [] };
-    
-    // Update cart
-    const existingItem = cart.items.find(item => item.productId === productId);
-    if (existingItem) {
-      existingItem.quantity += quantity;
-    } else {
-      const product = await this.getProduct(productId);
-      cart.items.push({
-        productId,
-        quantity,
-        price: product.price,
-        name: product.name
-      });
+    @Transactional
+    public RegistrationResponse registerUser(RegistrationRequest request) {
+        // Validate input data
+        validationService.validateRegistrationRequest(request);
+        
+        // Check if user already exists
+        if (userRepository.existsByEmail(request.getEmail())) {
+            throw new UserAlreadyExistsException("User with this email already exists");
+        }
+        
+        // Create new user entity
+        User user = User.builder()
+            .email(request.getEmail())
+            .passwordHash(passwordEncoder.encode(request.getPassword()))
+            .firstName(request.getFirstName())
+            .lastName(request.getLastName())
+            .phone(request.getPhone())
+            .role(UserRole.CUSTOMER)
+            .isActive(true)
+            .emailVerified(false)
+            .build();
+        
+        // Save user to database
+        user = userRepository.save(user);
+        
+        // Create user profile
+        createUserProfile(user);
+        
+        // Send verification email
+        sendVerificationEmail(user);
+        
+        return RegistrationResponse.builder()
+            .userId(user.getUserId())
+            .message("Registration successful. Please verify your email.")
+            .build();
     }
     
-    // Update cache and database
-    await client.setex(cacheKey, 3600, JSON.stringify(cart));
-    await this.persistCartToDatabase(userId, cart);
-    
-    return cart;
-  }
-  
-  async getCart(userId) {
-    const cacheKey = `cart:${userId}`;
-    let cart = await client.get(cacheKey);
-    
-    if (!cart) {
-      cart = await this.getCartFromDatabase(userId);
-      await client.setex(cacheKey, 3600, JSON.stringify(cart));
-    } else {
-      cart = JSON.parse(cart);
+    private void createUserProfile(User user) {
+        UserProfile profile = UserProfile.builder()
+            .userId(user.getUserId())
+            .preferences(new HashMap<>())
+            .wishlist(new ArrayList<>())
+            .build();
+        
+        userProfileRepository.save(profile);
     }
-    
-    return cart;
-  }
 }
 ```
 
-#### 1.5 Order Service Component
+## 2. PRODUCT SERVICE - DETAILED DESIGN
 
-**Database Schema:**
+### 2.1 Product Catalog Module
+
+#### Class: ProductCatalogService
+```java
+public class ProductCatalogService {
+    private final ProductRepository productRepository;
+    private final ElasticsearchTemplate elasticsearchTemplate;
+    private final RedisTemplate<String, Object> redisTemplate;
+    private final ImageStorageService imageStorageService;
+    
+    public ProductResponse createProduct(CreateProductRequest request, String sellerId) {
+        // Validate product data
+        validateProductRequest(request);
+        
+        // Upload product images
+        List<String> imageUrls = uploadProductImages(request.getImages());
+        
+        // Create product entity
+        Product product = Product.builder()
+            .name(request.getName())
+            .description(request.getDescription())
+            .price(request.getPrice())
+            .categoryId(request.getCategoryId())
+            .sellerId(UUID.fromString(sellerId))
+            .images(imageUrls)
+            .isActive(true)
+            .build();
+        
+        // Save to MongoDB
+        product = productRepository.save(product);
+        
+        // Index in Elasticsearch
+        indexProductForSearch(product);
+        
+        // Create inventory record
+        createInventoryRecord(product.getProductId(), request.getInitialStock());
+        
+        return ProductResponse.from(product);
+    }
+    
+    public PagedResponse<ProductResponse> searchProducts(ProductSearchRequest request) {
+        // Build Elasticsearch query
+        BoolQueryBuilder queryBuilder = QueryBuilders.boolQuery();
+        
+        if (StringUtils.hasText(request.getKeyword())) {
+            queryBuilder.must(QueryBuilders.multiMatchQuery(
+                request.getKeyword(),
+                "name^2", "description", "category.name"
+            ));
+        }
+        
+        if (request.getCategoryId() != null) {
+            queryBuilder.filter(QueryBuilders.termQuery("categoryId", request.getCategoryId()));
+        }
+        
+        if (request.getMinPrice() != null || request.getMaxPrice() != null) {
+            RangeQueryBuilder priceRange = QueryBuilders.rangeQuery("price");
+            if (request.getMinPrice() != null) {
+                priceRange.gte(request.getMinPrice());
+            }
+            if (request.getMaxPrice() != null) {
+                priceRange.lte(request.getMaxPrice());
+            }
+            queryBuilder.filter(priceRange);
+        }
+        
+        // Add sorting
+        SortBuilder<?> sortBuilder = getSortBuilder(request.getSortBy(), request.getSortOrder());
+        
+        // Execute search
+        SearchRequest searchRequest = new SearchRequest("products")
+            .source(new SearchSourceBuilder()
+                .query(queryBuilder)
+                .sort(sortBuilder)
+                .from(request.getPage() * request.getSize())
+                .size(request.getSize())
+            );
+        
+        SearchResponse response = elasticsearchTemplate.search(searchRequest, RequestOptions.DEFAULT);
+        
+        // Convert results
+        List<ProductResponse> products = Arrays.stream(response.getHits().getHits())
+            .map(hit -> convertToProductResponse(hit.getSourceAsMap()))
+            .collect(Collectors.toList());
+        
+        return PagedResponse.<ProductResponse>builder()
+            .content(products)
+            .totalElements(response.getHits().getTotalHits().value)
+            .totalPages((int) Math.ceil((double) response.getHits().getTotalHits().value / request.getSize()))
+            .currentPage(request.getPage())
+            .build();
+    }
+}
+```
+
+#### MongoDB Schema: products Collection
+```javascript
+{
+  _id: ObjectId,
+  productId: UUID,
+  name: String,
+  description: String,
+  price: Decimal128,
+  categoryId: UUID,
+  sellerId: UUID,
+  images: [String],
+  specifications: {
+    weight: String,
+    dimensions: String,
+    color: String,
+    material: String
+  },
+  seoMetadata: {
+    title: String,
+    description: String,
+    keywords: [String]
+  },
+  isActive: Boolean,
+  createdAt: Date,
+  updatedAt: Date
+}
+
+// Indexes
+db.products.createIndex({ "productId": 1 }, { unique: true })
+db.products.createIndex({ "categoryId": 1 })
+db.products.createIndex({ "sellerId": 1 })
+db.products.createIndex({ "name": "text", "description": "text" })
+db.products.createIndex({ "price": 1 })
+db.products.createIndex({ "isActive": 1 })
+```
+
+### 2.2 Inventory Management Module
+
+#### Class: InventoryService
+```java
+public class InventoryService {
+    private final InventoryRepository inventoryRepository;
+    private final RedisTemplate<String, Object> redisTemplate;
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+    
+    @Transactional
+    public boolean reserveInventory(UUID productId, int quantity) {
+        String lockKey = "inventory_lock:" + productId;
+        
+        // Acquire distributed lock
+        Boolean lockAcquired = redisTemplate.opsForValue().setIfAbsent(
+            lockKey, 
+            "locked", 
+            Duration.ofSeconds(30)
+        );
+        
+        if (!lockAcquired) {
+            throw new InventoryLockException("Unable to acquire inventory lock");
+        }
+        
+        try {
+            Inventory inventory = inventoryRepository.findByProductId(productId)
+                .orElseThrow(() -> new InventoryNotFoundException("Inventory not found"));
+            
+            if (inventory.getAvailableQuantity() < quantity) {
+                return false;
+            }
+            
+            // Reserve inventory
+            inventory.setAvailableQuantity(inventory.getAvailableQuantity() - quantity);
+            inventory.setReservedQuantity(inventory.getReservedQuantity() + quantity);
+            inventory.setLastUpdated(Instant.now());
+            
+            inventoryRepository.save(inventory);
+            
+            // Publish inventory updated event
+            publishInventoryUpdatedEvent(inventory);
+            
+            return true;
+        } finally {
+            // Release lock
+            redisTemplate.delete(lockKey);
+        }
+    }
+    
+    @Transactional
+    public void confirmReservation(UUID productId, int quantity) {
+        Inventory inventory = inventoryRepository.findByProductId(productId)
+            .orElseThrow(() -> new InventoryNotFoundException("Inventory not found"));
+        
+        inventory.setReservedQuantity(inventory.getReservedQuantity() - quantity);
+        inventory.setLastUpdated(Instant.now());
+        
+        inventoryRepository.save(inventory);
+        
+        // Check for low stock alert
+        if (inventory.getAvailableQuantity() < inventory.getLowStockThreshold()) {
+            publishLowStockAlert(inventory);
+        }
+    }
+}
+```
+
+## 3. ORDER SERVICE - DETAILED DESIGN
+
+### 3.1 Shopping Cart Module
+
+#### Class: ShoppingCartService
+```java
+public class ShoppingCartService {
+    private final RedisTemplate<String, Object> redisTemplate;
+    private final ProductService productService;
+    private final InventoryService inventoryService;
+    
+    public CartResponse addToCart(String userId, AddToCartRequest request) {
+        String cartKey = "cart:" + userId;
+        
+        // Validate product exists and is active
+        ProductResponse product = productService.getProduct(request.getProductId());
+        if (!product.isActive()) {
+            throw new ProductNotAvailableException("Product is not available");
+        }
+        
+        // Check inventory availability
+        if (!inventoryService.isAvailable(request.getProductId(), request.getQuantity())) {
+            throw new InsufficientInventoryException("Insufficient inventory");
+        }
+        
+        // Get existing cart
+        Cart cart = getCartFromRedis(cartKey);
+        if (cart == null) {
+            cart = new Cart(userId);
+        }
+        
+        // Add or update cart item
+        CartItem existingItem = cart.getItems().stream()
+            .filter(item -> item.getProductId().equals(request.getProductId()))
+            .findFirst()
+            .orElse(null);
+        
+        if (existingItem != null) {
+            existingItem.setQuantity(existingItem.getQuantity() + request.getQuantity());
+            existingItem.setTotalPrice(existingItem.getUnitPrice().multiply(BigDecimal.valueOf(existingItem.getQuantity())));
+        } else {
+            CartItem newItem = CartItem.builder()
+                .productId(request.getProductId())
+                .productName(product.getName())
+                .unitPrice(product.getPrice())
+                .quantity(request.getQuantity())
+                .totalPrice(product.getPrice().multiply(BigDecimal.valueOf(request.getQuantity())))
+                .build();
+            
+            cart.getItems().add(newItem);
+        }
+        
+        // Recalculate cart total
+        cart.calculateTotal();
+        
+        // Save cart to Redis
+        redisTemplate.opsForValue().set(cartKey, cart, Duration.ofDays(30));
+        
+        return CartResponse.from(cart);
+    }
+    
+    public CheckoutResponse checkout(String userId, CheckoutRequest request) {
+        String cartKey = "cart:" + userId;
+        Cart cart = getCartFromRedis(cartKey);
+        
+        if (cart == null || cart.getItems().isEmpty()) {
+            throw new EmptyCartException("Cart is empty");
+        }
+        
+        // Validate all items are still available
+        validateCartItems(cart);
+        
+        // Reserve inventory for all items
+        List<InventoryReservation> reservations = reserveCartInventory(cart);
+        
+        try {
+            // Create order
+            Order order = createOrderFromCart(cart, request);
+            
+            // Process payment
+            PaymentResponse paymentResponse = processPayment(order, request.getPaymentDetails());
+            
+            if (paymentResponse.isSuccessful()) {
+                // Confirm inventory reservations
+                confirmInventoryReservations(reservations);
+                
+                // Clear cart
+                redisTemplate.delete(cartKey);
+                
+                // Send order confirmation
+                sendOrderConfirmation(order);
+                
+                return CheckoutResponse.builder()
+                    .orderId(order.getOrderId())
+                    .status("SUCCESS")
+                    .message("Order placed successfully")
+                    .build();
+            } else {
+                // Release inventory reservations
+                releaseInventoryReservations(reservations);
+                
+                throw new PaymentFailedException("Payment processing failed: " + paymentResponse.getErrorMessage());
+            }
+        } catch (Exception e) {
+            // Release inventory reservations on any error
+            releaseInventoryReservations(reservations);
+            throw e;
+        }
+    }
+}
+```
+
+### 3.2 Order Processing Module
+
+#### Class: OrderProcessingService
+```java
+public class OrderProcessingService {
+    private final OrderRepository orderRepository;
+    private final PaymentService paymentService;
+    private final NotificationService notificationService;
+    private final OrderStateMachine stateMachine;
+    
+    @Transactional
+    public Order createOrder(CreateOrderRequest request) {
+        Order order = Order.builder()
+            .userId(request.getUserId())
+            .items(request.getItems())
+            .shippingAddress(request.getShippingAddress())
+            .billingAddress(request.getBillingAddress())
+            .subtotal(calculateSubtotal(request.getItems()))
+            .tax(calculateTax(request.getItems(), request.getShippingAddress()))
+            .shippingCost(calculateShippingCost(request.getItems(), request.getShippingAddress()))
+            .status(OrderStatus.PENDING)
+            .build();
+        
+        order.setTotalAmount(order.getSubtotal().add(order.getTax()).add(order.getShippingCost()));
+        
+        return orderRepository.save(order);
+    }
+    
+    public void processOrderPayment(UUID orderId, PaymentDetails paymentDetails) {
+        Order order = orderRepository.findById(orderId)
+            .orElseThrow(() -> new OrderNotFoundException("Order not found"));
+        
+        if (order.getStatus() != OrderStatus.PENDING) {
+            throw new InvalidOrderStateException("Order is not in pending state");
+        }
+        
+        try {
+            // Process payment
+            PaymentResponse paymentResponse = paymentService.processPayment(
+                PaymentRequest.builder()
+                    .orderId(orderId)
+                    .amount(order.getTotalAmount())
+                    .paymentMethod(paymentDetails.getPaymentMethod())
+                    .cardDetails(paymentDetails.getCardDetails())
+                    .build()
+            );
+            
+            if (paymentResponse.isSuccessful()) {
+                // Update order status
+                stateMachine.transition(order, OrderEvent.PAYMENT_SUCCESSFUL);
+                
+                // Create payment record
+                createPaymentRecord(order, paymentResponse);
+                
+                // Send confirmation notifications
+                notificationService.sendOrderConfirmation(order);
+                
+                // Trigger fulfillment process
+                triggerFulfillment(order);
+            } else {
+                // Update order status to payment failed
+                stateMachine.transition(order, OrderEvent.PAYMENT_FAILED);
+                
+                // Send payment failure notification
+                notificationService.sendPaymentFailureNotification(order, paymentResponse.getErrorMessage());
+            }
+        } catch (PaymentProcessingException e) {
+            stateMachine.transition(order, OrderEvent.PAYMENT_FAILED);
+            throw e;
+        }
+    }
+}
+```
+
+#### Database Schema: orders Table
 ```sql
 CREATE TABLE orders (
     order_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    order_status VARCHAR(20) CHECK (order_status IN ('Pending', 'Processing', 'Shipped', 'Delivered', 'Cancelled')) DEFAULT 'Pending',
+    user_id UUID NOT NULL REFERENCES users(user_id),
+    order_number VARCHAR(50) UNIQUE NOT NULL,
+    status order_status_enum NOT NULL DEFAULT 'PENDING',
+    subtotal DECIMAL(10,2) NOT NULL,
+    tax DECIMAL(10,2) NOT NULL DEFAULT 0,
+    shipping_cost DECIMAL(10,2) NOT NULL DEFAULT 0,
     total_amount DECIMAL(10,2) NOT NULL,
+    currency VARCHAR(3) NOT NULL DEFAULT 'USD',
     shipping_address JSONB NOT NULL,
     billing_address JSONB NOT NULL,
-    payment_method_id UUID REFERENCES payment_methods(payment_method_id),
-    date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    estimated_delivery DATE,
-    tracking_number VARCHAR(100),
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    shipped_at TIMESTAMP,
+    delivered_at TIMESTAMP
+);
+
+CREATE TYPE order_status_enum AS ENUM (
+    'PENDING', 'CONFIRMED', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'CANCELLED', 'REFUNDED'
 );
 
 CREATE TABLE order_items (
     order_item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id UUID REFERENCES orders(order_id) ON DELETE CASCADE,
-    product_id UUID REFERENCES products(product_id),
+    order_id UUID NOT NULL REFERENCES orders(order_id),
+    product_id UUID NOT NULL,
+    product_name VARCHAR(255) NOT NULL,
     quantity INTEGER NOT NULL CHECK (quantity > 0),
-    price_at_order DECIMAL(10,2) NOT NULL,
-    seller_id UUID REFERENCES users(user_id),
+    unit_price DECIMAL(10,2) NOT NULL,
+    total_price DECIMAL(10,2) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX idx_orders_user_id ON orders(user_id);
+CREATE INDEX idx_orders_status ON orders(status);
+CREATE INDEX idx_orders_created_at ON orders(created_at);
+CREATE INDEX idx_order_items_order_id ON order_items(order_id);
+CREATE INDEX idx_order_items_product_id ON order_items(product_id);
 ```
 
-**Order Processing Workflow:**
-```javascript
-const { EventEmitter } = require('events');
+## 4. PAYMENT SERVICE - DETAILED DESIGN
 
-class OrderService extends EventEmitter {
-  async processOrder(orderData) {
-    const transaction = await db.beginTransaction();
+### 4.1 Payment Processing Module
+
+#### Class: PaymentProcessingService
+```java
+public class PaymentProcessingService {
+    private final Map<PaymentMethod, PaymentProcessor> paymentProcessors;
+    private final PaymentRepository paymentRepository;
+    private final FraudDetectionService fraudDetectionService;
     
-    try {
-      // 1. Create order
-      const order = await this.createOrder(orderData, transaction);
-      
-      // 2. Validate inventory
-      await this.validateInventory(order.items, transaction);
-      
-      // 3. Reserve inventory
-      await this.reserveInventory(order.items, transaction);
-      
-      // 4. Process payment
-      const paymentResult = await this.processPayment(order, transaction);
-      
-      if (paymentResult.status === 'success') {
-        // 5. Update order status
-        await this.updateOrderStatus(order.order_id, 'Processing', transaction);
+    public PaymentResponse processPayment(PaymentRequest request) {
+        // Validate payment request
+        validatePaymentRequest(request);
         
-        // 6. Clear cart
-        await this.clearCart(order.user_id, transaction);
-        
-        await transaction.commit();
-        
-        // 7. Emit events
-        this.emit('orderCreated', order);
-        this.emit('inventoryUpdated', order.items);
-        this.emit('paymentProcessed', paymentResult);
-        
-        return order;
-      } else {
-        await transaction.rollback();
-        throw new Error('Payment processing failed');
-      }
-    } catch (error) {
-      await transaction.rollback();
-      throw error;
-    }
-  }
-}
-```
-
-#### 1.6 Payment Service Component
-
-**Database Schema:**
-```sql
-CREATE TABLE payment_methods (
-    payment_method_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    type VARCHAR(20) CHECK (type IN ('Credit', 'Debit', 'Digital Wallet')) NOT NULL,
-    masked_details VARCHAR(100) NOT NULL,
-    is_default BOOLEAN DEFAULT FALSE,
-    expiry_date DATE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE payments (
-    payment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id UUID REFERENCES orders(order_id) ON DELETE CASCADE,
-    payment_method_id UUID REFERENCES payment_methods(payment_method_id),
-    amount DECIMAL(10,2) NOT NULL,
-    payment_status VARCHAR(20) CHECK (payment_status IN ('Pending', 'Processing', 'Success', 'Failed', 'Refunded')) DEFAULT 'Pending',
-    transaction_id VARCHAR(100),
-    date_processed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    gateway_response JSONB,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-**Stripe Integration:**
-```javascript
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-
-class PaymentService {
-  async processPayment(orderData, paymentMethodId) {
-    try {
-      // Create payment intent
-      const paymentIntent = await stripe.paymentIntents.create({
-        amount: Math.round(orderData.total_amount * 100), // Convert to cents
-        currency: 'usd',
-        payment_method: paymentMethodId,
-        confirmation_method: 'manual',
-        confirm: true,
-        metadata: {
-          orderId: orderData.order_id,
-          userId: orderData.user_id
+        // Perform fraud detection
+        FraudAssessment fraudAssessment = fraudDetectionService.assessTransaction(request);
+        if (fraudAssessment.getRiskLevel() == RiskLevel.HIGH) {
+            return PaymentResponse.builder()
+                .successful(false)
+                .errorCode("FRAUD_DETECTED")
+                .errorMessage("Transaction flagged for potential fraud")
+                .build();
         }
-      });
-      
-      // Log payment attempt
-      await this.logPayment({
-        order_id: orderData.order_id,
-        payment_method_id: paymentMethodId,
-        amount: orderData.total_amount,
-        transaction_id: paymentIntent.id,
-        payment_status: paymentIntent.status === 'succeeded' ? 'Success' : 'Failed',
-        gateway_response: paymentIntent
-      });
-      
-      return {
-        status: paymentIntent.status === 'succeeded' ? 'success' : 'failed',
-        transactionId: paymentIntent.id,
-        gatewayResponse: paymentIntent
-      };
-    } catch (error) {
-      await this.logPayment({
-        order_id: orderData.order_id,
-        payment_method_id: paymentMethodId,
-        amount: orderData.total_amount,
-        payment_status: 'Failed',
-        gateway_response: { error: error.message }
-      });
-      
-      throw error;
-    }
-  }
-}
-```
-
-### 2. Data Flow Diagrams
-
-#### 2.1 User Registration Flow
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant AG as API Gateway
-    participant US as User Service
-    participant DB as Database
-    participant NS as Notification Service
-    
-    U->>AG: POST /api/v1/users/register
-    AG->>AG: Rate Limit Check
-    AG->>AG: Input Validation
-    AG->>US: Forward Request
-    US->>US: Validate Email Format
-    US->>US: Hash Password
-    US->>DB: Create User Record
-    DB-->>US: User Created
-    US->>NS: Send Welcome Email
-    US-->>AG: Registration Success
-    AG-->>U: 201 Created + JWT Token
-```
-
-#### 2.2 Product Purchase Flow
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant AG as API Gateway
-    participant CS as Cart Service
-    participant OS as Order Service
-    participant PS as Payment Service
-    participant PRS as Product Service
-    participant NS as Notification Service
-    
-    U->>AG: POST /api/v1/cart/items
-    AG->>CS: Add to Cart
-    CS-->>U: Item Added
-    
-    U->>AG: POST /api/v1/orders/checkout
-    AG->>OS: Process Checkout
-    OS->>PRS: Validate Inventory
-    PRS-->>OS: Inventory Valid
-    OS->>PS: Process Payment
-    PS-->>OS: Payment Success
-    OS->>PRS: Update Inventory
-    OS->>NS: Send Order Confirmation
-    OS-->>U: Order Created
-```
-
-### 3. Sequence Diagrams
-
-#### 3.1 Authentication Sequence
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant AG as API Gateway
-    participant US as User Service
-    participant R as Redis Cache
-    participant DB as Database
-    
-    C->>AG: POST /login {email, password}
-    AG->>US: Authenticate User
-    US->>R: Check Rate Limit
-    R-->>US: Rate Limit OK
-    US->>DB: Verify Credentials
-    DB-->>US: User Valid
-    US->>US: Generate JWT Tokens
-    US->>R: Cache User Session
-    US-->>AG: {accessToken, refreshToken}
-    AG-->>C: 200 OK + Tokens
-```
-
-#### 3.2 Order Processing Sequence
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant AG as API Gateway
-    participant OS as Order Service
-    participant PS as Payment Service
-    participant PRS as Product Service
-    participant MQ as Message Queue
-    
-    C->>AG: POST /orders
-    AG->>OS: Create Order
-    OS->>PRS: Reserve Inventory
-    PRS-->>OS: Inventory Reserved
-    OS->>PS: Process Payment
-    PS-->>OS: Payment Successful
-    OS->>MQ: Publish Order Event
-    OS-->>AG: Order Created
-    AG-->>C: 201 Created
-    
-    MQ->>NS: Order Notification
-    MQ->>AS: Analytics Event
-    MQ->>IS: Inventory Update
-```
-
-### 4. Implementation Details
-
-#### 4.1 Database Indexing Strategy
-```sql
--- User service indexes
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_users_type ON users(user_type);
-CREATE INDEX idx_users_active ON users(is_active);
-
--- Product service indexes
-CREATE INDEX idx_products_category_price ON products(category_id, price);
-CREATE INDEX idx_products_seller_active ON products(seller_id, is_active);
-CREATE INDEX idx_products_created ON products(date_created DESC);
-
--- Order service indexes
-CREATE INDEX idx_orders_user_status ON orders(user_id, order_status);
-CREATE INDEX idx_orders_date ON orders(date_created DESC);
-CREATE INDEX idx_order_items_product ON order_items(product_id);
-```
-
-#### 4.2 Caching Strategy
-```javascript
-const cacheConfig = {
-  // User sessions
-  userSessions: {
-    ttl: 900, // 15 minutes
-    prefix: 'session:'
-  },
-  
-  // Product catalog
-  products: {
-    ttl: 3600, // 1 hour
-    prefix: 'product:'
-  },
-  
-  // Shopping carts
-  carts: {
-    ttl: 3600, // 1 hour
-    prefix: 'cart:'
-  },
-  
-  // Search results
-  searchResults: {
-    ttl: 1800, // 30 minutes
-    prefix: 'search:'
-  }
-};
-```
-
-#### 4.3 Error Handling Implementation
-```javascript
-class APIError extends Error {
-  constructor(message, statusCode, errorCode) {
-    super(message);
-    this.statusCode = statusCode;
-    this.errorCode = errorCode;
-    this.timestamp = new Date().toISOString();
-  }
-}
-
-const errorHandler = (err, req, res, next) => {
-  // Log error
-  logger.error({
-    error: err.message,
-    stack: err.stack,
-    url: req.url,
-    method: req.method,
-    ip: req.ip,
-    userAgent: req.get('User-Agent'),
-    correlationId: req.correlationId
-  });
-  
-  if (err instanceof APIError) {
-    return res.status(err.statusCode).json({
-      error: {
-        message: err.message,
-        code: err.errorCode,
-        timestamp: err.timestamp,
-        correlationId: req.correlationId
-      }
-    });
-  }
-  
-  // Default error response
-  res.status(500).json({
-    error: {
-      message: 'Internal server error',
-      code: 'INTERNAL_ERROR',
-      timestamp: new Date().toISOString(),
-      correlationId: req.correlationId
-    }
-  });
-};
-```
-
-#### 4.4 Monitoring and Logging
-```javascript
-const winston = require('winston');
-const prometheus = require('prom-client');
-
-// Metrics
-const httpRequestDuration = new prometheus.Histogram({
-  name: 'http_request_duration_seconds',
-  help: 'Duration of HTTP requests in seconds',
-  labelNames: ['method', 'route', 'status_code']
-});
-
-const httpRequestTotal = new prometheus.Counter({
-  name: 'http_requests_total',
-  help: 'Total number of HTTP requests',
-  labelNames: ['method', 'route', 'status_code']
-});
-
-// Logger configuration
-const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.errors({ stack: true }),
-    winston.format.json()
-  ),
-  defaultMeta: { service: 'ecommerce-api' },
-  transports: [
-    new winston.transports.File({ filename: 'error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'combined.log' })
-  ]
-});
-```
-
-### 5. Security Implementation
-
-#### 5.1 Input Validation
-```javascript
-const Joi = require('joi');
-
-const userRegistrationSchema = Joi.object({
-  email: Joi.string().email().required(),
-  password: Joi.string().min(8).pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/).required(),
-  firstName: Joi.string().min(2).max(50).required(),
-  lastName: Joi.string().min(2).max(50).required(),
-  phoneNumber: Joi.string().pattern(/^\+?[1-9]\d{1,14}$/),
-  userType: Joi.string().valid('Consumer', 'Seller', 'Admin').default('Consumer')
-});
-
-const validateInput = (schema) => {
-  return (req, res, next) => {
-    const { error, value } = schema.validate(req.body);
-    if (error) {
-      return res.status(400).json({
-        error: {
-          message: 'Validation error',
-          details: error.details.map(d => d.message)
+        
+        // Get appropriate payment processor
+        PaymentProcessor processor = paymentProcessors.get(request.getPaymentMethod());
+        if (processor == null) {
+            throw new UnsupportedPaymentMethodException("Payment method not supported");
         }
-      });
+        
+        try {
+            // Create payment record
+            Payment payment = Payment.builder()
+                .orderId(request.getOrderId())
+                .amount(request.getAmount())
+                .currency(request.getCurrency())
+                .paymentMethod(request.getPaymentMethod())
+                .status(PaymentStatus.PROCESSING)
+                .build();
+            
+            payment = paymentRepository.save(payment);
+            
+            // Process payment with external gateway
+            PaymentGatewayResponse gatewayResponse = processor.processPayment(request);
+            
+            // Update payment record
+            payment.setTransactionId(gatewayResponse.getTransactionId());
+            payment.setGatewayResponse(gatewayResponse.getRawResponse());
+            
+            if (gatewayResponse.isSuccessful()) {
+                payment.setStatus(PaymentStatus.COMPLETED);
+                payment.setProcessedAt(Instant.now());
+                
+                paymentRepository.save(payment);
+                
+                return PaymentResponse.builder()
+                    .successful(true)
+                    .paymentId(payment.getPaymentId())
+                    .transactionId(gatewayResponse.getTransactionId())
+                    .build();
+            } else {
+                payment.setStatus(PaymentStatus.FAILED);
+                payment.setErrorCode(gatewayResponse.getErrorCode());
+                payment.setErrorMessage(gatewayResponse.getErrorMessage());
+                
+                paymentRepository.save(payment);
+                
+                return PaymentResponse.builder()
+                    .successful(false)
+                    .errorCode(gatewayResponse.getErrorCode())
+                    .errorMessage(gatewayResponse.getErrorMessage())
+                    .build();
+            }
+        } catch (PaymentGatewayException e) {
+            // Handle gateway errors
+            return PaymentResponse.builder()
+                .successful(false)
+                .errorCode("GATEWAY_ERROR")
+                .errorMessage("Payment gateway error: " + e.getMessage())
+                .build();
+        }
     }
-    req.body = value;
-    next();
-  };
-};
+}
 ```
 
-#### 5.2 SQL Injection Prevention
-```javascript
-const { Pool } = require('pg');
+#### Class: StripePaymentProcessor
+```java
+@Component
+public class StripePaymentProcessor implements PaymentProcessor {
+    private final Stripe stripe;
+    
+    @Override
+    public PaymentGatewayResponse processPayment(PaymentRequest request) {
+        try {
+            PaymentIntentCreateParams params = PaymentIntentCreateParams.builder()
+                .setAmount(request.getAmount().multiply(BigDecimal.valueOf(100)).longValue()) // Convert to cents
+                .setCurrency(request.getCurrency().toLowerCase())
+                .setPaymentMethod(request.getCardDetails().getStripePaymentMethodId())
+                .setConfirm(true)
+                .putMetadata("order_id", request.getOrderId().toString())
+                .build();
+            
+            PaymentIntent intent = PaymentIntent.create(params);
+            
+            if ("succeeded".equals(intent.getStatus())) {
+                return PaymentGatewayResponse.builder()
+                    .successful(true)
+                    .transactionId(intent.getId())
+                    .rawResponse(intent.toJson())
+                    .build();
+            } else {
+                return PaymentGatewayResponse.builder()
+                    .successful(false)
+                    .errorCode("PAYMENT_FAILED")
+                    .errorMessage("Payment intent status: " + intent.getStatus())
+                    .rawResponse(intent.toJson())
+                    .build();
+            }
+        } catch (StripeException e) {
+            return PaymentGatewayResponse.builder()
+                .successful(false)
+                .errorCode(e.getCode())
+                .errorMessage(e.getMessage())
+                .build();
+        }
+    }
+}
+```
 
-class DatabaseService {
-  constructor() {
-    this.pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.NODE_ENV === 'production'
-    });
-  }
-  
-  async query(text, params) {
-    const start = Date.now();
+## 5. NOTIFICATION SERVICE - DETAILED DESIGN
+
+### 5.1 Multi-Channel Notification Module
+
+#### Class: NotificationService
+```java
+public class NotificationService {
+    private final Map<NotificationType, NotificationChannel> channels;
+    private final NotificationTemplateService templateService;
+    private final NotificationRepository notificationRepository;
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+    
+    public void sendNotification(NotificationRequest request) {
+        // Create notification record
+        Notification notification = Notification.builder()
+            .userId(request.getUserId())
+            .type(request.getType())
+            .title(request.getTitle())
+            .message(request.getMessage())
+            .data(request.getData())
+            .status(NotificationStatus.PENDING)
+            .build();
+        
+        notification = notificationRepository.save(notification);
+        
+        // Send to Kafka for async processing
+        kafkaTemplate.send("notification-events", notification);
+    }
+    
+    @KafkaListener(topics = "notification-events")
+    public void processNotification(Notification notification) {
+        try {
+            // Get user preferences
+            UserNotificationPreferences preferences = getUserPreferences(notification.getUserId());
+            
+            // Send through enabled channels
+            if (preferences.isEmailEnabled()) {
+                sendEmailNotification(notification);
+            }
+            
+            if (preferences.isSmsEnabled()) {
+                sendSmsNotification(notification);
+            }
+            
+            if (preferences.isPushEnabled()) {
+                sendPushNotification(notification);
+            }
+            
+            // Update notification status
+            notification.setStatus(NotificationStatus.SENT);
+            notification.setSentAt(Instant.now());
+            notificationRepository.save(notification);
+            
+        } catch (Exception e) {
+            notification.setStatus(NotificationStatus.FAILED);
+            notification.setErrorMessage(e.getMessage());
+            notificationRepository.save(notification);
+        }
+    }
+    
+    private void sendEmailNotification(Notification notification) {
+        EmailTemplate template = templateService.getEmailTemplate(notification.getType());
+        
+        EmailMessage email = EmailMessage.builder()
+            .to(getUserEmail(notification.getUserId()))
+            .subject(template.renderSubject(notification.getData()))
+            .body(template.renderBody(notification.getData()))
+            .build();
+        
+        emailChannel.send(email);
+    }
+}
+```
+
+## 6. DATA FLOW SEQUENCES
+
+### 6.1 User Registration Sequence
+```
+User -> Frontend -> API Gateway -> User Service -> Database -> Email Service
+  |                                      |            |           |
+  |                                      |            |           |
+  |<- Registration Response <-------------|            |           |
+  |                                                   |           |
+  |<- Verification Email <---------------------------------|
+```
+
+### 6.2 Product Search Sequence
+```
+User -> Frontend -> API Gateway -> Product Service -> Elasticsearch -> Cache
+  |                                      |                |           |
+  |                                      |<- Search Results-|           |
+  |                                      |                            |
+  |<- Product List <--------------------|                            |
+  |                                                                  |
+  |<- Cached Results (if available) <---------------------------------|
+```
+
+### 6.3 Order Processing Sequence
+```
+User -> Frontend -> API Gateway -> Order Service -> Payment Service -> Stripe
+  |                                    |                 |              |
+  |                                    |                 |<- Payment ----|
+  |                                    |                 |   Response    
+  |                                    |<- Payment ------|
+  |                                    |   Status
+  |                                    |
+  |                                    |-> Inventory Service
+  |                                    |-> Notification Service
+  |                                    |
+  |<- Order Confirmation <-------------|                 
+```
+
+## 7. ERROR HANDLING & RESILIENCE PATTERNS
+
+### 7.1 Circuit Breaker Implementation
+```java
+@Component
+public class PaymentCircuitBreaker {
+    private final CircuitBreaker circuitBreaker;
+    
+    public PaymentCircuitBreaker() {
+        this.circuitBreaker = CircuitBreaker.ofDefaults("payment-service");
+        circuitBreaker.getEventPublisher()
+            .onStateTransition(event -> 
+                log.info("Circuit breaker state transition: {} -> {}", 
+                    event.getStateTransition().getFromState(),
+                    event.getStateTransition().getToState()));
+    }
+    
+    public PaymentResponse processPaymentWithCircuitBreaker(PaymentRequest request) {
+        Supplier<PaymentResponse> decoratedSupplier = CircuitBreaker
+            .decorateSupplier(circuitBreaker, () -> paymentService.processPayment(request));
+        
+        return Try.ofSupplier(decoratedSupplier)
+            .recover(throwable -> {
+                if (throwable instanceof CallNotPermittedException) {
+                    return PaymentResponse.builder()
+                        .successful(false)
+                        .errorCode("SERVICE_UNAVAILABLE")
+                        .errorMessage("Payment service is temporarily unavailable")
+                        .build();
+                }
+                throw new PaymentProcessingException("Payment processing failed", throwable);
+            })
+            .get();
+    }
+}
+```
+
+### 7.2 Retry Mechanism with Exponential Backoff
+```java
+@Retryable(
+    value = {TransientException.class},
+    maxAttempts = 3,
+    backoff = @Backoff(delay = 1000, multiplier = 2)
+)
+public void processOrderWithRetry(Order order) {
     try {
-      const result = await this.pool.query(text, params);
-      const duration = Date.now() - start;
-      logger.info('Executed query', { text, duration, rows: result.rowCount });
-      return result;
-    } catch (error) {
-      logger.error('Query error', { text, error: error.message });
-      throw error;
+        // Process order logic
+        orderProcessor.process(order);
+    } catch (Exception e) {
+        log.warn("Order processing failed, will retry. Order ID: {}, Error: {}", 
+            order.getOrderId(), e.getMessage());
+        throw new TransientException("Order processing failed", e);
     }
-  }
-  
-  // Safe user lookup
-  async getUserByEmail(email) {
-    const query = 'SELECT * FROM users WHERE email = $1 AND is_active = true';
-    const result = await this.query(query, [email]);
-    return result.rows[0];
-  }
+}
+
+@Recover
+public void recoverOrderProcessing(TransientException ex, Order order) {
+    log.error("Order processing failed after all retries. Order ID: {}", order.getOrderId());
+    // Move order to failed queue for manual intervention
+    failedOrderQueue.add(order);
+    // Send notification to operations team
+    notificationService.sendOperationalAlert("Order processing failed", order);
 }
 ```
 
-#### 5.3 Encryption Implementation
-```javascript
-const crypto = require('crypto');
+## 8. SECURITY IMPLEMENTATION
 
-class EncryptionService {
-  constructor() {
-    this.algorithm = 'aes-256-gcm';
-    this.secretKey = crypto.scryptSync(process.env.ENCRYPTION_KEY, 'salt', 32);
-  }
-  
-  encrypt(text) {
-    const iv = crypto.randomBytes(16);
-    const cipher = crypto.createCipher(this.algorithm, this.secretKey);
-    cipher.setAAD(Buffer.from('ecommerce-platform', 'utf8'));
+### 8.1 JWT Token Management
+```java
+@Component
+public class JWTTokenManager {
+    private final String secretKey;
+    private final long accessTokenExpiry = 3600000; // 1 hour
+    private final long refreshTokenExpiry = 2592000000L; // 30 days
     
-    let encrypted = cipher.update(text, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
+    public String generateAccessToken(User user) {
+        Claims claims = Jwts.claims().setSubject(user.getUserId().toString());
+        claims.put("email", user.getEmail());
+        claims.put("role", user.getRole().toString());
+        claims.put("type", "ACCESS");
+        
+        return Jwts.builder()
+            .setClaims(claims)
+            .setIssuedAt(new Date())
+            .setExpiration(new Date(System.currentTimeMillis() + accessTokenExpiry))
+            .signWith(SignatureAlgorithm.HS512, secretKey)
+            .compact();
+    }
     
-    const authTag = cipher.getAuthTag();
+    public boolean validateToken(String token) {
+        try {
+            Jwts.parser().setSigningKey(secretKey).parseClaimsJws(token);
+            return true;
+        } catch (JwtException | IllegalArgumentException e) {
+            return false;
+        }
+    }
     
-    return {
-      encrypted,
-      iv: iv.toString('hex'),
-      authTag: authTag.toString('hex')
-    };
-  }
-  
-  decrypt(encryptedData) {
-    const decipher = crypto.createDecipher(this.algorithm, this.secretKey);
-    decipher.setAAD(Buffer.from('ecommerce-platform', 'utf8'));
-    decipher.setAuthTag(Buffer.from(encryptedData.authTag, 'hex'));
-    
-    let decrypted = decipher.update(encryptedData.encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    
-    return decrypted;
-  }
+    public Claims getClaimsFromToken(String token) {
+        return Jwts.parser()
+            .setSigningKey(secretKey)
+            .parseClaimsJws(token)
+            .getBody();
+    }
 }
 ```
 
-### 6. Performance Optimization
-
-#### 6.1 Connection Pooling
-```javascript
-const connectionPoolConfig = {
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  min: 5,
-  max: 20,
-  acquireTimeoutMillis: 30000,
-  createTimeoutMillis: 30000,
-  destroyTimeoutMillis: 5000,
-  idleTimeoutMillis: 30000,
-  reapIntervalMillis: 1000,
-  createRetryIntervalMillis: 100
-};
-```
-
-#### 6.2 Query Optimization
-```sql
--- Optimized product search query
-EXPLAIN ANALYZE
-SELECT p.product_id, p.name, p.price, p.image_urls,
-       c.name as category_name,
-       AVG(r.rating) as avg_rating,
-       COUNT(r.review_id) as review_count
-FROM products p
-LEFT JOIN categories c ON p.category_id = c.category_id
-LEFT JOIN reviews r ON p.product_id = r.product_id
-WHERE p.is_active = true
-  AND p.search_vector @@ plainto_tsquery('laptop')
-  AND p.price BETWEEN 500 AND 2000
-GROUP BY p.product_id, p.name, p.price, p.image_urls, c.name
-ORDER BY ts_rank(p.search_vector, plainto_tsquery('laptop')) DESC,
-         avg_rating DESC NULLS LAST
-LIMIT 20;
-```
-
-### 7. Testing Strategy
-
-#### 7.1 Unit Tests
-```javascript
-const request = require('supertest');
-const app = require('../app');
-const { setupTestDB, cleanupTestDB } = require('../test/helpers');
-
-describe('User Service', () => {
-  beforeEach(async () => {
-    await setupTestDB();
-  });
-  
-  afterEach(async () => {
-    await cleanupTestDB();
-  });
-  
-  describe('POST /api/v1/users/register', () => {
-    it('should register a new user successfully', async () => {
-      const userData = {
-        email: 'test@example.com',
-        password: 'SecurePass123!',
-        firstName: 'John',
-        lastName: 'Doe',
-        userType: 'Consumer'
-      };
-      
-      const response = await request(app)
-        .post('/api/v1/users/register')
-        .send(userData)
-        .expect(201);
-      
-      expect(response.body).toHaveProperty('accessToken');
-      expect(response.body).toHaveProperty('refreshToken');
-      expect(response.body.user.email).toBe(userData.email);
-    });
+### 8.2 Input Validation and Sanitization
+```java
+@Component
+public class ValidationService {
+    private final Validator validator;
     
-    it('should reject registration with invalid email', async () => {
-      const userData = {
-        email: 'invalid-email',
-        password: 'SecurePass123!',
-        firstName: 'John',
-        lastName: 'Doe'
-      };
-      
-      await request(app)
-        .post('/api/v1/users/register')
-        .send(userData)
-        .expect(400);
-    });
-  });
-});
-```
-
-#### 7.2 Integration Tests
-```javascript
-describe('Order Processing Integration', () => {
-  it('should process complete order flow', async () => {
-    // 1. Register user
-    const user = await createTestUser();
-    const authToken = await getAuthToken(user);
-    
-    // 2. Create product
-    const product = await createTestProduct();
-    
-    // 3. Add to cart
-    await request(app)
-      .post('/api/v1/cart/items')
-      .set('Authorization', `Bearer ${authToken}`)
-      .send({ productId: product.id, quantity: 2 })
-      .expect(200);
-    
-    // 4. Process checkout
-    const orderData = {
-      shippingAddress: testAddress,
-      billingAddress: testAddress,
-      paymentMethodId: 'test_payment_method'
-    };
-    
-    const response = await request(app)
-      .post('/api/v1/orders/checkout')
-      .set('Authorization', `Bearer ${authToken}`)
-      .send(orderData)
-      .expect(201);
-    
-    // 5. Verify order creation
-    expect(response.body.order).toHaveProperty('orderId');
-    expect(response.body.order.status).toBe('Processing');
-    
-    // 6. Verify inventory update
-    const updatedProduct = await getProduct(product.id);
-    expect(updatedProduct.stockQuantity).toBe(product.stockQuantity - 2);
-  });
-});
-```
-
-### 8. Deployment Configuration
-
-#### 8.1 Docker Configuration
-```dockerfile
-# Multi-stage build for Node.js service
-FROM node:18-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production
-
-FROM node:18-alpine AS runtime
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S nextjs -u 1001
-
-WORKDIR /app
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
-COPY --chown=nextjs:nodejs . .
-
-USER nextjs
-EXPOSE 3000
-CMD ["npm", "start"]
-```
-
-#### 8.2 Kubernetes Deployment
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: user-service
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: user-service
-  template:
-    metadata:
-      labels:
-        app: user-service
-    spec:
-      containers:
-      - name: user-service
-        image: ecommerce/user-service:latest
-        ports:
-        - containerPort: 3000
-        env:
-        - name: DATABASE_URL
-          valueFrom:
-            secretKeyRef:
-              name: db-secret
-              key: url
-        - name: JWT_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: jwt-secret
-              key: secret
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "250m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 3000
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: 3000
-          initialDelaySeconds: 5
-          periodSeconds: 5
-```
-
-### 9. Compliance and Audit
-
-#### 9.1 Audit Logging
-```javascript
-class AuditLogger {
-  static async logUserAction(userId, action, resource, details = {}) {
-    const auditEntry = {
-      user_id: userId,
-      action,
-      resource,
-      details: JSON.stringify(details),
-      ip_address: details.ipAddress,
-      user_agent: details.userAgent,
-      timestamp: new Date(),
-      correlation_id: details.correlationId
-    };
-    
-    await db.query(
-      'INSERT INTO audit_logs (user_id, action, resource, details, ip_address, user_agent, timestamp, correlation_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-      Object.values(auditEntry)
-    );
-  }
-  
-  static async logSecurityEvent(eventType, severity, details) {
-    const securityEvent = {
-      event_type: eventType,
-      severity,
-      details: JSON.stringify(details),
-      timestamp: new Date(),
-      source_ip: details.sourceIp,
-      resolved: false
-    };
-    
-    await db.query(
-      'INSERT INTO security_events (event_type, severity, details, timestamp, source_ip, resolved) VALUES ($1, $2, $3, $4, $5, $6)',
-      Object.values(securityEvent)
-    );
-    
-    // Alert security team for high severity events
-    if (severity === 'HIGH' || severity === 'CRITICAL') {
-      await this.alertSecurityTeam(securityEvent);
+    public void validateRegistrationRequest(RegistrationRequest request) {
+        Set<ConstraintViolation<RegistrationRequest>> violations = validator.validate(request);
+        
+        if (!violations.isEmpty()) {
+            String errorMessage = violations.stream()
+                .map(ConstraintViolation::getMessage)
+                .collect(Collectors.joining(", "));
+            throw new ValidationException(errorMessage);
+        }
+        
+        // Additional custom validations
+        if (!isValidEmail(request.getEmail())) {
+            throw new ValidationException("Invalid email format");
+        }
+        
+        if (!isStrongPassword(request.getPassword())) {
+            throw new ValidationException("Password does not meet security requirements");
+        }
+        
+        // Sanitize input
+        request.setFirstName(sanitizeInput(request.getFirstName()));
+        request.setLastName(sanitizeInput(request.getLastName()));
     }
-  }
+    
+    private String sanitizeInput(String input) {
+        if (input == null) return null;
+        
+        // Remove potentially dangerous characters
+        return input.replaceAll("[<>\"'%;()&+]", "")
+                   .trim();
+    }
+    
+    private boolean isStrongPassword(String password) {
+        // At least 8 characters, 1 uppercase, 1 lowercase, 1 digit, 1 special char
+        String pattern = "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[@$!%*?&])[A-Za-z\\d@$!%*?&]{8,}$";
+        return password.matches(pattern);
+    }
 }
 ```
 
-#### 9.2 Data Retention Policy
-```javascript
-class DataRetentionService {
-  async enforceRetentionPolicies() {
-    const policies = [
-      {
-        table: 'audit_logs',
-        retentionDays: 2555, // 7 years
-        dateColumn: 'timestamp'
-      },
-      {
-        table: 'user_sessions',
-        retentionDays: 30,
-        dateColumn: 'created_at'
-      },
-      {
-        table: 'cart_items',
-        retentionDays: 90,
-        dateColumn: 'added_at',
-        condition: 'cart_id NOT IN (SELECT cart_id FROM active_carts)'
-      }
-    ];
+## 9. PERFORMANCE OPTIMIZATION
+
+### 9.1 Caching Strategy Implementation
+```java
+@Service
+public class ProductCacheService {
+    private final RedisTemplate<String, Object> redisTemplate;
+    private final ProductRepository productRepository;
     
-    for (const policy of policies) {
-      await this.cleanupOldData(policy);
-    }
-  }
-  
-  async cleanupOldData(policy) {
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - policy.retentionDays);
-    
-    let query = `DELETE FROM ${policy.table} WHERE ${policy.dateColumn} < $1`;
-    const params = [cutoffDate];
-    
-    if (policy.condition) {
-      query += ` AND ${policy.condition}`;
+    @Cacheable(value = "products", key = "#productId")
+    public ProductResponse getProduct(UUID productId) {
+        Product product = productRepository.findById(productId)
+            .orElseThrow(() -> new ProductNotFoundException("Product not found"));
+        
+        return ProductResponse.from(product);
     }
     
-    const result = await db.query(query, params);
+    @CacheEvict(value = "products", key = "#productId")
+    public void evictProductCache(UUID productId) {
+        // Cache will be evicted automatically
+    }
     
-    logger.info(`Data retention cleanup completed`, {
-      table: policy.table,
-      deletedRows: result.rowCount,
-      cutoffDate
-    });
-  }
+    @Cacheable(value = "popular-products", unless = "#result.isEmpty()")
+    public List<ProductResponse> getPopularProducts(int limit) {
+        return productRepository.findPopularProducts(PageRequest.of(0, limit))
+            .stream()
+            .map(ProductResponse::from)
+            .collect(Collectors.toList());
+    }
 }
 ```
 
-This comprehensive Low-Level Design document provides detailed implementation specifications for all components of the e-commerce platform, including database schemas, API implementations, security measures, performance optimizations, and compliance features. The design ensures scalability, security, and maintainability while meeting all enterprise requirements.
+### 9.2 Database Connection Pooling
+```java
+@Configuration
+public class DatabaseConfig {
+    
+    @Bean
+    @Primary
+    public DataSource primaryDataSource() {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl("jdbc:postgresql://localhost:5432/ecommerce");
+        config.setUsername("ecommerce_user");
+        config.setPassword("password");
+        
+        // Connection pool settings
+        config.setMaximumPoolSize(20);
+        config.setMinimumIdle(5);
+        config.setConnectionTimeout(30000);
+        config.setIdleTimeout(600000);
+        config.setMaxLifetime(1800000);
+        config.setLeakDetectionThreshold(60000);
+        
+        return new HikariDataSource(config);
+    }
+}
+```
+
+## 10. MONITORING AND OBSERVABILITY
+
+### 10.1 Custom Metrics
+```java
+@Component
+public class OrderMetrics {
+    private final Counter orderCreatedCounter;
+    private final Timer orderProcessingTimer;
+    private final Gauge activeOrdersGauge;
+    
+    public OrderMetrics(MeterRegistry meterRegistry) {
+        this.orderCreatedCounter = Counter.builder("orders.created")
+            .description("Number of orders created")
+            .register(meterRegistry);
+        
+        this.orderProcessingTimer = Timer.builder("orders.processing.time")
+            .description("Time taken to process orders")
+            .register(meterRegistry);
+        
+        this.activeOrdersGauge = Gauge.builder("orders.active")
+            .description("Number of active orders")
+            .register(meterRegistry, this, OrderMetrics::getActiveOrderCount);
+    }
+    
+    public void incrementOrderCreated() {
+        orderCreatedCounter.increment();
+    }
+    
+    public Timer.Sample startOrderProcessingTimer() {
+        return Timer.start();
+    }
+    
+    public void stopOrderProcessingTimer(Timer.Sample sample) {
+        sample.stop(orderProcessingTimer);
+    }
+    
+    private double getActiveOrderCount() {
+        // Implementation to get active order count
+        return orderRepository.countByStatus(OrderStatus.PROCESSING);
+    }
+}
+```
+
+### 10.2 Distributed Tracing
+```java
+@RestController
+public class OrderController {
+    private final OrderService orderService;
+    private final Tracer tracer;
+    
+    @PostMapping("/orders")
+    public ResponseEntity<OrderResponse> createOrder(@RequestBody CreateOrderRequest request) {
+        Span span = tracer.nextSpan()
+            .name("create-order")
+            .tag("user.id", request.getUserId().toString())
+            .start();
+        
+        try (Tracer.SpanInScope ws = tracer.withSpanInScope(span)) {
+            OrderResponse response = orderService.createOrder(request);
+            span.tag("order.id", response.getOrderId().toString());
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            span.tag("error", e.getMessage());
+            throw e;
+        } finally {
+            span.end();
+        }
+    }
+}
+```
+
+This comprehensive Low-Level Design document provides detailed implementation specifications for the Online Shopping Platform, including class structures, database schemas, sequence diagrams, error handling patterns, security implementations, and performance optimizations. Each component is designed to be scalable, maintainable, and secure, following industry best practices and design patterns.
