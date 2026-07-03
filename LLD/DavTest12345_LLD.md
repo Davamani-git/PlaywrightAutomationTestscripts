@@ -16,15 +16,15 @@
 
 #### Architecture
 ```
-┌─────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────┐
 │                    User Management Service                   │
-├─────────────────────────────────────────────────────────────┤
+├───────────────────────────────────────────────────────────────┤
 │  Controllers  │  Services  │  Repositories  │  Middleware   │
-├─────────────────────────────────────────────────────────────┤
+├───────────────────────────────────────────────────────────────┤
 │ AuthController│ UserService│ UserRepository │ AuthMiddleware │
 │ UserController│ AuthService│ RoleRepository │ ValidateInput  │
 │ RoleController│ RoleService│ SessionRepo    │ RateLimiter    │
-└─────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────┘
 ```
 
 #### Component Details
@@ -216,14 +216,14 @@ class UserService {
 
 #### Component Architecture
 ```
-┌─────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────┐
 │                  Product Catalog Service                     │
-├─────────────────────────────────────────────────────────────┤
+├───────────────────────────────────────────────────────────────┤
 │ ProductController │ SearchController │ CategoryController   │
 │ ProductService    │ SearchService    │ CategoryService      │
 │ ProductRepository │ ElasticSearch    │ CategoryRepository   │
 │ ImageService      │ IndexManager     │ CacheManager         │
-└─────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **ProductController.js**
@@ -399,14 +399,14 @@ class SearchService {
 
 #### Component Architecture
 ```
-┌─────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────┐
 │                  Order Management Service                    │
-├─────────────────────────────────────────────────────────────┤
+├───────────────────────────────────────────────────────────────┤
 │ OrderController   │ OrderService      │ OrderRepository     │
 │ OrderItemService  │ InventoryService  │ PaymentService      │
 │ StatusManager     │ EventHandler      │ NotificationService │
 │ WorkflowEngine    │ AuditLogger       │ ReportGenerator     │
-└─────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────┘
 ```
 
 **OrderController.js**
@@ -635,7 +635,7 @@ class OrderService {
 ### 1. User Registration Flow
 ```
 ┌──────────┐    ┌─────────────┐    ┌──────────────┐    ┌─────────────┐
-│  Client  │───▶│ API Gateway │───▶│ User Service │───▶│  Database   │
+│  Client  │───►│ API Gateway │───►│ User Service │───►│  Database   │
 └──────────┘    └─────────────┘    └──────────────┘    └─────────────┘
       │                │                    │                   │
       │                │         ┌──────────▼──────────┐        │
@@ -650,7 +650,7 @@ class OrderService {
       │                │         │   JWT Generation    │        │
       │                │         └──────────┬──────────┘        │
       │                │                    │                   │
-      │◀───────────────┼────────────────────┘                   │
+      │◄───────────────┼────────────────────┴───────────────────│
       │                │                                        │
       │                │         ┌──────────────────────────────▼──┐
       │                │         │        Audit Logging            │
@@ -660,7 +660,7 @@ class OrderService {
 ### 2. Product Search Flow
 ```
 ┌──────────┐    ┌─────────────┐    ┌──────────────┐    ┌─────────────┐
-│  Client  │───▶│ API Gateway │───▶│Search Service│───▶│Elasticsearch│
+│  Client  │───►│ API Gateway │───►│Search Service│───►│Elasticsearch│
 └──────────┘    └─────────────┘    └──────────────┘    └─────────────┘
       │                │                    │                   │
       │                │         ┌──────────▼──────────┐        │
@@ -675,7 +675,7 @@ class OrderService {
       │                │         │  Result Formatting  │        │
       │                │         └──────────┬──────────┘        │
       │                │                    │                   │
-      │◀───────────────┼────────────────────┘                   │
+      │◄───────────────┼────────────────────┴───────────────────│
       │                │                                        │
       │                │         ┌──────────────────────────────▼──┐
       │                │         │       Cache Update              │
@@ -685,7 +685,7 @@ class OrderService {
 ### 3. Order Processing Flow
 ```
 ┌──────────┐    ┌─────────────┐    ┌──────────────┐    ┌─────────────┐
-│  Client  │───▶│ API Gateway │───▶│ Order Service│───▶│  Database   │
+│  Client  │───►│ API Gateway │───►│ Order Service│───►│  Database   │
 └──────────┘    └─────────────┘    └──────────────┘    └─────────────┘
       │                │                    │                   │
       │                │         ┌──────────▼──────────┐        │
@@ -704,7 +704,7 @@ class OrderService {
       │                │         │  Event Publishing   │        │
       │                │         └──────────┬──────────┘        │
       │                │                    │                   │
-      │◀───────────────┼────────────────────┘                   │
+      │◄───────────────┼────────────────────┴───────────────────│
       │                │                                        │
       │                │         ┌──────────────────────────────▼──┐
       │                │         │     Notification Service        │
@@ -717,54 +717,54 @@ class OrderService {
 ```
 Client          API Gateway     Auth Service    User Service    Database        Cache
   │                 │               │               │             │             │
-  │─── POST /login ─▶│               │               │             │             │
-  │                 │──── validate ─▶│               │             │             │
-  │                 │               │─── findUser ──▶│             │             │
-  │                 │               │               │── query ───▶│             │
-  │                 │               │               │◀─ result ───│             │
-  │                 │               │◀── user ──────│             │             │
+  │─── POST /login ─►│               │               │             │             │
+  │                 │──── validate ─►│               │             │             │
+  │                 │               │─── findUser ──►│             │             │
+  │                 │               │               │── query ───►│             │
+  │                 │               │               │◄─ result ───│             │
+  │                 │               │◄── user ──────│             │             │
   │                 │               │─── verifyPwd ─│             │             │
   │                 │               │─── genToken ──│             │             │
-  │                 │               │─── cacheUser ─────────────────────────▶│
-  │                 │◀─── token ────│               │             │             │
-  │◀─── response ───│               │               │             │             │
+  │                 │               │─── cacheUser ──────────────────────────────►│
+  │                 │◄─── token ────│               │             │             │
+  │◄─── response ───│               │               │             │             │
 ```
 
 ### 2. Product Search Sequence
 ```
 Client          API Gateway     Search Service  Cache Service   Elasticsearch   Database
   │                 │               │               │               │             │
-  │─── GET /search ─▶│               │               │               │             │
-  │                 │─── search ────▶│               │               │             │
-  │                 │               │─── checkCache ▶│               │             │
-  │                 │               │◀─── miss ─────│               │             │
+  │─── GET /search ─►│               │               │               │             │
+  │                 │─── search ────►│               │               │             │
+  │                 │               │─── checkCache ►│               │             │
+  │                 │               │◄─── miss ─────│               │             │
   │                 │               │─── buildQuery ─│               │             │
-  │                 │               │─── search ─────────────────────▶│             │
-  │                 │               │◀─── results ───────────────────│             │
-  │                 │               │─── getDetails ─────────────────────────────▶│
-  │                 │               │◀─── details ────────────────────────────────│
-  │                 │               │─── cacheResults ▶│               │             │
-  │                 │◀─── response ─│               │               │             │
-  │◀─── results ────│               │               │               │             │
+  │                 │               │─── search ─────────────────────►│             │
+  │                 │               │◄─── results ───────────────────│             │
+  │                 │               │─── getDetails ─────────────────────────────►│
+  │                 │               │◄─── details ───────────────────────────────│
+  │                 │               │─── cacheResults ►│               │             │
+  │                 │◄─── response ─│               │               │             │
+  │◄─── results ────│               │               │               │             │
 ```
 
 ### 3. Order Creation Sequence
 ```
 Client      API Gateway   Order Service   Inventory   Payment     Database    Event Bus
   │             │             │             │           │           │           │
-  │── POST ─────▶│             │             │           │           │           │
-  │             │── create ───▶│             │           │           │           │
-  │             │             │── validate ──▶│           │           │           │
-  │             │             │◀─── ok ──────│           │           │           │
-  │             │             │── reserve ───▶│           │           │           │
-  │             │             │◀─── ok ──────│           │           │           │
-  │             │             │── process ───────────────▶│           │           │
-  │             │             │◀─── success ─────────────│           │           │
-  │             │             │── save ──────────────────────────────▶│           │
-  │             │             │◀─── order ───────────────────────────│           │
-  │             │             │── publish ───────────────────────────────────────▶│
-  │             │◀─── order ──│             │           │           │           │
-  │◀─── response ──│             │             │           │           │           │
+  │── POST ────►│             │             │           │           │           │
+  │             │── create ───►│             │           │           │           │
+  │             │             │── validate ──►│           │           │           │
+  │             │             │◄─── ok ──────│           │           │           │
+  │             │             │── reserve ───►│           │           │           │
+  │             │             │◄─── ok ──────│           │           │           │
+  │             │             │── process ───────────────►│           │           │
+  │             │             │◄─── success ─────────────│           │           │
+  │             │             │── save ─────────────────────────────►│           │
+  │             │             │◄─── order ─────────────────────────│           │
+  │             │             │── publish ─────────────────────────────────────►│
+  │             │◄─── order ──│             │           │           │           │
+  │◄─── response ──│             │             │           │           │           │
 ```
 
 ## Implementation Details
