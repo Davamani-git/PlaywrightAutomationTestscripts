@@ -1,460 +1,342 @@
-# SUBTASK 1: DOMAIN MODEL AND HIGH-LEVEL DESIGN FOR DAVTEST12345
+## Subtask 1 Output
 
-## DOMAIN MODEL ANALYSIS
+### Domain Model
 
-### Entities Extracted:
+#### Entities and Attributes:
 
-**Core Entities:**
-- User (Consumer, Seller, Admin)
-- Product
-- Order
-- Cart
-- Payment
-- Inventory
-- Review
-- Notification
-- Analytics
+**User**
+- userId (Primary Key)
+- email (Unique)
+- passwordHash
+- firstName
+- lastName
+- phoneNumber
+- dateCreated
+- lastLogin
+- isActive
+- userType (Consumer/Seller/Admin)
 
-### Domain Model (UML Class Diagram)
+**Profile**
+- profileId (Primary Key)
+- userId (Foreign Key)
+- address
+- city
+- state
+- zipCode
+- country
+- preferences
+- avatarUrl
 
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│      User       │    │    Product      │    │     Order       │
-├─────────────────┤    ├─────────────────┤    ├─────────────────┤
-│ - userId: UUID  │    │ - productId: UUID│   │ - orderId: UUID │
-│ - email: String │    │ - name: String   │    │ - userId: UUID  │
-│ - password: Hash│    │ - description: Text│   │ - totalAmount: $ │
-│ - role: Enum    │    │ - price: Decimal │    │ - status: Enum  │
-│ - createdAt: TS │    │ - sellerId: UUID │    │ - createdAt: TS │
-│ - isActive: Bool│    │ - categoryId: UUID│   │ - updatedAt: TS │
-└─────────────────┘    │ - images: Array  │    └─────────────────┘
-         │              │ - isActive: Bool │             │
-         │              └─────────────────┘             │
-         │                       │                      │
-         │              ┌─────────────────┐             │
-         │              │   Inventory     │             │
-         │              ├─────────────────┤             │
-         │              │ - productId: UUID│            │
-         │              │ - quantity: Int  │             │
-         │              │ - lowStockAlert: Int│         │
-         │              └─────────────────┘             │
-         │                                              │
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│      Cart       │    │    Payment      │    │   OrderItem     │
-├─────────────────┤    ├─────────────────┤    ├─────────────────┤
-│ - cartId: UUID  │    │ - paymentId: UUID│   │ - orderItemId: UUID│
-│ - userId: UUID  │    │ - orderId: UUID  │    │ - orderId: UUID │
-│ - createdAt: TS │    │ - amount: Decimal│    │ - productId: UUID│
-│ - updatedAt: TS │    │ - method: Enum   │    │ - quantity: Int │
-└─────────────────┘    │ - status: Enum   │    │ - unitPrice: $  │
-         │              │ - transactionId: String│ └─────────────────┘
-         │              │ - processedAt: TS│
-         │              └─────────────────┘
-         │
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│    CartItem     │    │     Review      │    │  Notification   │
-├─────────────────┤    ├─────────────────┤    ├─────────────────┤
-│ - cartItemId: UUID│  │ - reviewId: UUID │   │ - notificationId: UUID│
-│ - cartId: UUID  │    │ - productId: UUID│   │ - userId: UUID  │
-│ - productId: UUID│   │ - userId: UUID   │    │ - message: Text │
-│ - quantity: Int │    │ - rating: Int    │    │ - type: Enum    │
-│ - addedAt: TS   │    │ - comment: Text  │    │ - isRead: Bool  │
-└─────────────────┘    │ - createdAt: TS  │    │ - createdAt: TS │
-                       └─────────────────┘    └─────────────────┘
-```
+**Role**
+- roleId (Primary Key)
+- roleName
+- permissions
+- description
 
-### Relationships:
-- User (1) → (0..*) Order
-- User (1) → (0..1) Cart
-- Cart (1) → (0..*) CartItem
-- Order (1) → (1..*) OrderItem
-- Product (1) → (0..*) OrderItem
-- Product (1) → (0..*) CartItem
-- Product (1) → (1) Inventory
-- Order (1) → (0..*) Payment
-- User (1) → (0..*) Review
-- Product (1) → (0..*) Review
+**Product**
+- productId (Primary Key)
+- sellerId (Foreign Key)
+- name
+- description
+- price
+- stockQuantity
+- categoryId (Foreign Key)
+- imageUrls
+- isActive
+- dateCreated
+- lastModified
 
-## HIGH-LEVEL DESIGN DOCUMENT
+**Category**
+- categoryId (Primary Key)
+- name
+- description
+- parentCategoryId (Self-referencing)
 
-### Architecture Overview
+**Cart**
+- cartId (Primary Key)
+- userId (Foreign Key)
+- dateCreated
+- lastModified
 
-```
-┌───────────────────────────────────────────────────────────────┐
-│                    PRESENTATION LAYER                           │
-├───────────────────────────────────────────────────────────────┤
-│  Web App (React)  │  Mobile Web  │  Admin Dashboard  │  APIs    │
-└───────────────────────────────────────────────────────────────┘
-                                │
-┌───────────────────────────────────────────────────────────────┐
-│                    API GATEWAY LAYER                            │
-├───────────────────────────────────────────────────────────────┤
-│  Authentication  │  Rate Limiting  │  Request Routing  │  SSL/TLS│
-└───────────────────────────────────────────────────────────────┘
-                                │
-┌───────────────────────────────────────────────────────────────┐
-│                   MICROSERVICES LAYER                           │
-├───────────────────────────────────────────────────────────────┤
-│ User Service │ Product Service │ Order Service │ Payment Service │
-│ Cart Service │ Inventory Svc   │ Notification  │ Analytics Svc   │
-└───────────────────────────────────────────────────────────────┘
-                                │
-┌───────────────────────────────────────────────────────────────┐
-│                     DATA LAYER                                  │
-├───────────────────────────────────────────────────────────────┤
-│ PostgreSQL │ Redis Cache │ Elasticsearch │ File Storage (S3)    │
-└───────────────────────────────────────────────────────────────┘
-```
+**CartItem**
+- cartItemId (Primary Key)
+- cartId (Foreign Key)
+- productId (Foreign Key)
+- quantity
+- priceAtAdd
 
-### Major Components
+**Order**
+- orderId (Primary Key)
+- userId (Foreign Key)
+- orderStatus
+- totalAmount
+- shippingAddress
+- billingAddress
+- paymentMethodId (Foreign Key)
+- dateCreated
+- estimatedDelivery
+- trackingNumber
 
-#### 1. User Management Service
-- **Responsibilities:** Registration, authentication, profile management, RBAC
-- **Technology:** Node.js/Express, JWT tokens, bcrypt
-- **Database:** PostgreSQL (users, roles, permissions)
-- **Security:** Password hashing, session management, MFA support
+**OrderItem**
+- orderItemId (Primary Key)
+- orderId (Foreign Key)
+- productId (Foreign Key)
+- quantity
+- priceAtOrder
+- sellerId (Foreign Key)
 
-#### 2. Product Catalog Service
-- **Responsibilities:** Product CRUD, search, categorization, inventory tracking
-- **Technology:** Node.js/Express, Elasticsearch
-- **Database:** PostgreSQL (products), Elasticsearch (search index)
-- **Features:** Full-text search, filtering, sorting, image management
+**Payment**
+- paymentId (Primary Key)
+- orderId (Foreign Key)
+- paymentMethodId (Foreign Key)
+- amount
+- paymentStatus
+- transactionId
+- dateProcessed
+- gatewayResponse
 
-#### 3. Order Management Service
-- **Responsibilities:** Order processing, status tracking, fulfillment
-- **Technology:** Node.js/Express, Event-driven architecture
-- **Database:** PostgreSQL (orders, order_items)
-- **Integration:** Payment service, inventory service, notification service
+**PaymentMethod**
+- paymentMethodId (Primary Key)
+- userId (Foreign Key)
+- type (Credit/Debit/Digital Wallet)
+- maskedDetails
+- isDefault
+- expiryDate
 
-#### 4. Payment Processing Service
-- **Responsibilities:** Payment processing, refunds, transaction management
-- **Technology:** Node.js/Express, Stripe/PayPal APIs
-- **Database:** PostgreSQL (payments, transactions)
-- **Security:** PCI DSS compliance, tokenization, fraud detection
+**Review**
+- reviewId (Primary Key)
+- productId (Foreign Key)
+- userId (Foreign Key)
+- rating (1-5)
+- comment
+- dateCreated
+- isVerifiedPurchase
 
-#### 5. Shopping Cart Service
-- **Responsibilities:** Cart management, session handling
-- **Technology:** Node.js/Express, Redis
-- **Database:** Redis (session storage), PostgreSQL (persistent carts)
-- **Features:** Real-time updates, cart abandonment tracking
+**Notification**
+- notificationId (Primary Key)
+- userId (Foreign Key)
+- type
+- title
+- message
+- isRead
+- dateCreated
 
-### Integration Points
+#### Relationships:
+- User 1:1 Profile
+- User M:N Role (UserRole junction table)
+- User 1:M Product (as Seller)
+- User 1:1 Cart
+- Cart 1:M CartItem
+- CartItem M:1 Product
+- User 1:M Order
+- Order 1:M OrderItem
+- OrderItem M:1 Product
+- User 1:M PaymentMethod
+- Order 1:M Payment
+- Payment M:1 PaymentMethod
+- Product M:1 Category
+- Category 1:M Category (self-referencing)
+- Product 1:M Review
+- User 1:M Review
+- User 1:M Notification
 
-#### External Integrations:
-1. **Payment Gateways:** Stripe, PayPal, Square
-2. **Email Service:** SendGrid, AWS SES
-3. **SMS Service:** Twilio, AWS SNS
-4. **Cloud Storage:** AWS S3, CloudFront CDN
-5. **Logistics APIs:** FedEx, UPS, DHL
-6. **Analytics:** Google Analytics, Mixpanel
+### High-Level Design Document
 
-#### Internal Service Communication:
-- **Synchronous:** REST APIs with OpenAPI specification
-- **Asynchronous:** Event-driven using Apache Kafka/RabbitMQ
-- **Service Discovery:** Consul/Eureka
-- **Load Balancing:** NGINX, AWS ALB
+#### Architecture Overview
+**Microservices Architecture with API Gateway Pattern**
 
-### Security & Compliance Features
+**Core Components:**
 
-#### Enterprise Security Implementation:
+1. **API Gateway**
+   - Request routing and load balancing
+   - Rate limiting and throttling
+   - Authentication and authorization
+   - Request/response transformation
+   - Circuit breaker implementation
 
-**1. Input Validation & Output Filtering:**
-```javascript
-// Input validation middleware
-const validateInput = (schema) => (req, res, next) => {
-  const { error } = schema.validate(req.body);
-  if (error) return res.status(400).json({ error: error.details[0].message });
-  next();
-};
+2. **User Service**
+   - User registration and authentication
+   - Profile management
+   - Role-based access control (RBAC)
+   - JWT token management
 
-// Output filtering
-const sanitizeOutput = (data) => {
-  return DOMPurify.sanitize(data);
-};
-```
+3. **Product Service**
+   - Product catalog management
+   - Search and filtering capabilities
+   - Category management
+   - Inventory tracking
 
-**2. Encryption Standards:**
-- **Data at Rest:** AES-256 encryption
-- **Data in Transit:** TLS 1.3
-- **Database:** Transparent Data Encryption (TDE)
-- **Secrets:** AWS Secrets Manager/HashiCorp Vault
+4. **Cart Service**
+   - Shopping cart operations
+   - Session management
+   - Cart persistence
 
-**3. Role-Based Access Control (RBAC):**
-```yaml
-roles:
-  consumer:
-    permissions: [read:products, create:orders, read:own_orders]
-  seller:
-    permissions: [create:products, read:own_products, read:own_orders, update:inventory]
-  admin:
-    permissions: [read:all, write:all, delete:all, manage:users]
-```
+5. **Order Service**
+   - Order processing workflow
+   - Order status tracking
+   - Order history management
 
-**4. Attribute-Based Access Control (ABAC):**
-```javascript
-const checkAccess = (user, resource, action, context) => {
-  return policyEngine.evaluate({
-    subject: user,
-    resource: resource,
-    action: action,
-    environment: context
-  });
-};
-```
+6. **Payment Service**
+   - Payment method management
+   - Payment processing integration
+   - PCI DSS compliance
+   - Fraud detection
 
-**5. Audit Logging:**
-```javascript
-const auditLogger = {
-  logAccess: (userId, resource, action, result, timestamp) => {
-    audit.log({
-      userId,
-      resource,
-      action,
-      result,
-      timestamp,
-      ipAddress: req.ip,
-      userAgent: req.get('User-Agent')
-    });
-  }
-};
-```
+7. **Notification Service**
+   - Email notifications
+   - SMS notifications
+   - Push notifications
+   - Notification preferences
 
-**6. Secrets Management:**
-```javascript
-const secretsManager = {
-  getSecret: async (secretName) => {
-    return await vault.read(`secret/${secretName}`);
-  },
-  rotateSecret: async (secretName) => {
-    // Automatic secret rotation logic
-  }
-};
-```
+8. **Analytics Service**
+   - User behavior tracking
+   - Performance metrics
+   - Business intelligence
 
-### Compliance Features
+#### Integration Points
 
-#### 1. Data Retention Policy:
-```yaml
-retention_policies:
-  user_data: 7_years
-  transaction_data: 10_years
-  audit_logs: 7_years
-  session_data: 30_days
-  cart_data: 90_days
-```
+**External Integrations:**
+- Payment Gateways (Stripe, PayPal)
+- Email Service (SendGrid, AWS SES)
+- SMS Service (Twilio)
+- Search Engine (Elasticsearch)
+- CDN (CloudFlare, AWS CloudFront)
+- Monitoring (DataDog, New Relic)
 
-#### 2. Consent Management:
-```javascript
-const consentManager = {
-  recordConsent: (userId, consentType, granted, timestamp) => {
-    return db.consent.create({
-      userId,
-      consentType,
-      granted,
-      timestamp,
-      version: getCurrentPolicyVersion()
-    });
-  },
-  
-  checkConsent: (userId, dataType) => {
-    return db.consent.findOne({
-      userId,
-      consentType: dataType,
-      granted: true
-    });
-  }
-};
-```
+**Internal Integration:**
+- Event-driven architecture using message queues (RabbitMQ/Apache Kafka)
+- RESTful APIs with OpenAPI specification
+- GraphQL for complex data queries
+- Database per service pattern
 
-#### 3. Data Lineage Tracking:
-```javascript
-const dataLineage = {
-  trackDataFlow: (dataId, source, destination, transformation) => {
-    return lineageDB.create({
-      dataId,
-      source,
-      destination,
-      transformation,
-      timestamp: new Date(),
-      userId: getCurrentUser().id
-    });
-  }
-};
-```
+#### Security and Compliance Features
 
-#### 4. Compliance Reporting:
-```javascript
-const complianceReporter = {
-  generateSOC2Report: async (period) => {
-    return {
-      securityControls: await getSecurityControlsStatus(),
-      accessLogs: await getAccessLogsForPeriod(period),
-      incidentReports: await getIncidentReports(period),
-      dataProcessingActivities: await getDataProcessingLog(period)
-    };
-  }
-};
-```
+**Enterprise Security Implementation:**
 
-### Error Handling & Resilience Patterns
+1. **Input Validation**
+   - Server-side validation for all inputs
+   - SQL injection prevention
+   - XSS protection
+   - CSRF tokens
 
-#### 1. Retry Pattern:
-```javascript
-const retryWithBackoff = async (fn, maxRetries = 3) => {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      return await fn();
-    } catch (error) {
-      if (i === maxRetries - 1) throw error;
-      await sleep(Math.pow(2, i) * 1000); // Exponential backoff
-    }
-  }
-};
-```
+2. **Output Filtering**
+   - Data sanitization
+   - Content Security Policy (CSP)
+   - Response header security
 
-#### 2. Circuit Breaker Pattern:
-```javascript
-class CircuitBreaker {
-  constructor(threshold = 5, timeout = 60000) {
-    this.threshold = threshold;
-    this.timeout = timeout;
-    this.failureCount = 0;
-    this.state = 'CLOSED';
-    this.nextAttempt = Date.now();
-  }
+3. **Encryption**
+   - AES-256 for data at rest
+   - TLS 1.3 for data in transit
+   - Database field-level encryption for PII
 
-  async call(fn) {
-    if (this.state === 'OPEN') {
-      if (Date.now() < this.nextAttempt) {
-        throw new Error('Circuit breaker is OPEN');
-      }
-      this.state = 'HALF_OPEN';
-    }
+4. **Access Control**
+   - Role-Based Access Control (RBAC)
+   - Attribute-Based Access Control (ABAC)
+   - JWT with refresh token rotation
+   - Multi-factor authentication (MFA)
 
-    try {
-      const result = await fn();
-      this.onSuccess();
-      return result;
-    } catch (error) {
-      this.onFailure();
-      throw error;
-    }
-  }
-}
-```
+5. **Audit Logging**
+   - Comprehensive audit trails
+   - Immutable log storage
+   - Real-time security monitoring
+   - SIEM integration
 
-#### 3. Comprehensive Logging:
-```javascript
-const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.errors({ stack: true }),
-    winston.format.json()
-  ),
-  transports: [
-    new winston.transports.File({ filename: 'error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'combined.log' }),
-    new winston.transports.Console()
-  ]
-});
-```
+6. **Secrets Management**
+   - HashiCorp Vault integration
+   - Environment-specific secret rotation
+   - API key management
 
-### Data Flow Architecture
+**Compliance Features:**
 
-```
-User Request → API Gateway → Load Balancer → Microservice
-     ↓
-Authentication Service ← JWT Validation
-     ↓
-Business Logic Processing
-     ↓
-Database Operations (with encryption)
-     ↓
-Event Publishing (Kafka)
-     ↓
-Response (with output filtering)
-     ↓
-Audit Logging → Compliance Database
-```
+1. **Data Retention**
+   - Automated data lifecycle management
+   - Configurable retention policies
+   - Secure data deletion
 
-### Performance & Scalability
+2. **Consent Management**
+   - GDPR compliance framework
+   - Cookie consent management
+   - Data processing agreements
 
-#### Caching Strategy:
-- **L1 Cache:** Application-level (Node.js memory)
-- **L2 Cache:** Redis cluster
-- **L3 Cache:** CDN (CloudFront)
+3. **Data Lineage**
+   - Data flow documentation
+   - Processing activity records
+   - Impact assessment tracking
 
-#### Database Optimization:
-- **Read Replicas:** PostgreSQL read replicas
-- **Sharding:** Horizontal partitioning by user_id
-- **Indexing:** Optimized indexes for search queries
+4. **Compliance Reporting**
+   - Automated compliance dashboards
+   - Audit report generation
+   - Regulatory change tracking
 
-#### Auto-scaling Configuration:
-```yaml
-autoscaling:
-  min_instances: 2
-  max_instances: 50
-  target_cpu_utilization: 70%
-  scale_up_cooldown: 300s
-  scale_down_cooldown: 600s
-```
+#### Data Flow
 
-## VALIDATION REPORT
+**User Registration Flow:**
+1. User submits registration → API Gateway
+2. Input validation → User Service
+3. Password hashing → Database storage
+4. Welcome notification → Notification Service
 
-### Requirements Coverage Checklist:
+**Product Purchase Flow:**
+1. Add to cart → Cart Service
+2. Checkout initiation → Order Service
+3. Payment processing → Payment Service
+4. Order confirmation → Notification Service
+5. Inventory update → Product Service
 
-✅ **Functional Requirements:**
-- FR1: User registration and authentication - Covered in User Management Service
-- FR2: Product catalog with search/filter - Covered in Product Catalog Service
-- FR3: Shopping cart and checkout - Covered in Cart & Order Services
-- FR4: Order management and tracking - Covered in Order Management Service
-- FR5: Role-based access control - Implemented in RBAC system
-- FR6: Seller dashboard - Covered in User Management with seller role
-- FR7: Admin dashboard - Covered in Admin interface
-- FR8: Real-time notifications - Covered in Notification Service
-- FR9: Multiple payment methods - Covered in Payment Service
-- FR10: Product reviews and ratings - Covered in Review entity
-- FR11: Order cancellation and refunds - Covered in Order Service
+**Error Handling and Resilience:**
 
-✅ **Non-Functional Requirements:**
-- Performance: < 2s page load, < 5s checkout - Addressed with caching and CDN
-- Security: Encryption, PCI DSS compliance - Comprehensive security implementation
-- Scalability: 100K concurrent users - Auto-scaling and microservices architecture
-- Accessibility: WCAG 2.1 AA - Frontend implementation requirement
-- Reliability: 99.9% uptime - Circuit breakers, failover, monitoring
+1. **Retry Patterns**
+   - Exponential backoff for transient failures
+   - Circuit breaker for external services
+   - Bulkhead pattern for resource isolation
 
-✅ **Compliance Requirements:**
-- Data retention policies - Implemented
-- Consent management - Implemented
-- Data lineage tracking - Implemented
-- Audit logging - Comprehensive logging system
-- SOC2/ISO27001 alignment - Security controls and reporting
+2. **Logging Strategy**
+   - Structured logging with correlation IDs
+   - Centralized log aggregation
+   - Real-time alerting
 
-✅ **Error Handling:**
-- Retry mechanisms with exponential backoff
-- Circuit breaker pattern for service resilience
-- Comprehensive logging and monitoring
-- Graceful degradation strategies
+3. **Circuit Breaker Implementation**
+   - Service health monitoring
+   - Automatic failover mechanisms
+   - Graceful degradation
 
-### Security Validation:
-- ✅ Input validation and sanitization
-- ✅ Output filtering and encoding
-- ✅ AES-256 encryption for data at rest
-- ✅ TLS 1.3 for data in transit
-- ✅ RBAC and ABAC implementation
-- ✅ Comprehensive audit logging
-- ✅ Secrets management with rotation
-- ✅ PCI DSS compliance for payments
+#### Performance Optimization
 
-### Architecture Validation:
-- ✅ Microservices architecture for scalability
-- ✅ Event-driven communication
-- ✅ Database optimization and caching
-- ✅ Load balancing and auto-scaling
-- ✅ Service mesh for inter-service communication
-- ✅ Monitoring and observability
+- Database indexing strategy
+- Caching layers (Redis)
+- CDN for static content
+- Horizontal scaling capabilities
+- Load balancing algorithms
 
-# SUBTASK 2: GITHUB REPOSITORY LINK
+### Validation Report
 
-https://github.com/Davamani-git/PlaywrightAutomationTestscripts/tree/DavTest12345
+#### Requirements Coverage Checklist:
+✅ User Registration/Login
+✅ Product Catalog Management
+✅ Search & Filter Functionality
+✅ Shopping Cart Operations
+✅ Secure Checkout Process
+✅ Order Tracking System
+✅ Role-Based Access Control
+✅ Seller Dashboard
+✅ Admin Dashboard
+✅ Payment Processing
+✅ Notification System
+✅ Review System
+
+#### Compliance Checklist:
+✅ PCI DSS Compliance
+✅ GDPR Data Protection
+✅ SOC2 Security Controls
+✅ ISO27001 Information Security
+✅ WCAG 2.1 AA Accessibility
+✅ Data Encryption Standards
+✅ Audit Logging Requirements
+
+#### Error Handling Checklist:
+✅ Input Validation
+✅ Exception Handling
+✅ Circuit Breaker Pattern
+✅ Retry Mechanisms
+✅ Graceful Degradation
+✅ Monitoring and Alerting
