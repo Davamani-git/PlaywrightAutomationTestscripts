@@ -1,286 +1,323 @@
 # Subtask 1: Domain Model and High-Level Design
 
-## Requirements Validation and Analysis
+## PRD Validation Report
 
-### Validated Requirements:
-- **Authentication & Authorization**: Registration/Login with RBAC
-- **Product Management**: Catalog, Search & Filter, Inventory
-- **Transaction Processing**: Shopping Cart, Secure Checkout, Payment Methods
-- **Order Management**: Order Tracking, Refunds
-- **User Management**: Consumer, Seller, Admin roles
-- **Communication**: Notifications system
-- **Performance**: ≤2 sec page load, ≤5 sec checkout
-- **Security**: PCI DSS compliance, Encryption, Fraud Detection
-- **Scalability**: 100,000 concurrent users
-- **Availability**: 99.9% uptime
+### Requirements Completeness Assessment
+✅ **COMPLETE** - All core functional requirements identified
+✅ **COMPLETE** - Non-functional requirements specified
+✅ **COMPLETE** - Security and compliance requirements defined
+✅ **COMPLETE** - Performance metrics and targets established
+✅ **COMPLETE** - User roles and access patterns documented
+
+### Compliance Validation
+✅ **PCI DSS** - Payment processing compliance required
+✅ **WCAG 2.1 AA** - Accessibility compliance specified
+✅ **Data Protection** - Privacy regulation considerations noted
+✅ **Security Standards** - Encryption and fraud detection required
 
 ## Domain Model
 
-### Core Entities and Relationships:
+### Core Entities and Relationships
 
 ```
-USER
-├── user_id (PK)
-├── email (unique)
-├── password_hash
-├── first_name
-├── last_name
-├── phone
-├── status
-├── created_at
-├── updated_at
-└── user_type (consumer/seller/admin)
-
-PROFILE
-├── profile_id (PK)
-├── user_id (FK)
-├── address
-├── city
-├── state
-├── zip_code
-├── country
-└── preferences
-
-ROLE
-├── role_id (PK)
-├── role_name
-├── permissions
-└── description
-
-USER_ROLE
-├── user_id (FK)
-├── role_id (FK)
-└── assigned_at
-
-PRODUCT
-├── product_id (PK)
-├── seller_id (FK)
-├── name
-├── description
-├── price
-├── category_id (FK)
-├── inventory_count
-├── status
-├── created_at
-└── updated_at
-
-CATEGORY
-├── category_id (PK)
-├── name
-├── description
-└── parent_category_id (FK)
-
-CART
-├── cart_id (PK)
-├── user_id (FK)
-├── created_at
-└── updated_at
-
-CART_ITEM
-├── cart_item_id (PK)
-├── cart_id (FK)
-├── product_id (FK)
-├── quantity
-└── added_at
-
-ORDER
-├── order_id (PK)
-├── user_id (FK)
-├── total_amount
-├── status
-├── payment_status
-├── shipping_address
-├── created_at
-└── updated_at
-
-ORDER_ITEM
-├── order_item_id (PK)
-├── order_id (FK)
-├── product_id (FK)
-├── quantity
-├── unit_price
-└── total_price
-
-PAYMENT
-├── payment_id (PK)
-├── order_id (FK)
-├── amount
-├── payment_method
-├── transaction_id
-├── status
-└── processed_at
-
-REVIEW
-├── review_id (PK)
-├── product_id (FK)
-├── user_id (FK)
-├── rating
-├── comment
-└── created_at
-
-NOTIFICATION
-├── notification_id (PK)
-├── user_id (FK)
-├── type
-├── message
-├── status
-└── created_at
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│      User       │    │    Product      │    │     Order       │
+├─────────────────┤    ├─────────────────┤    ├─────────────────┤
+│ + userId: UUID  │    │ + productId: UUID│   │ + orderId: UUID │
+│ + email: String │    │ + name: String   │    │ + userId: UUID  │
+│ + password: Hash│    │ + description: Text│   │ + totalAmount: Decimal│
+│ + firstName: String│  │ + price: Decimal │    │ + status: OrderStatus│
+│ + lastName: String│   │ + categoryId: UUID│   │ + createdAt: DateTime│
+│ + phone: String │    │ + sellerId: UUID │    │ + updatedAt: DateTime│
+│ + address: Address│   │ + inventory: Integer│  │ + shippingAddress: Address│
+│ + role: UserRole│    │ + images: List<URL>│   │ + paymentMethod: String│
+│ + isActive: Boolean│  │ + isActive: Boolean│   └─────────────────┘
+│ + createdAt: DateTime│ │ + createdAt: DateTime│        │
+│ + lastLogin: DateTime│ │ + updatedAt: DateTime│        │
+└─────────────────┘    └─────────────────┘              │
+         │                       │                       │
+         │                       │                       │
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   UserRole      │    │    Category     │    │   OrderItem     │
+├─────────────────┤    ├─────────────────┤    ├─────────────────┤
+│ + roleId: UUID  │    │ + categoryId: UUID│   │ + itemId: UUID  │
+│ + roleName: String│   │ + name: String   │    │ + orderId: UUID │
+│ + permissions: List│  │ + description: String│ │ + productId: UUID│
+└─────────────────┘    │ + parentId: UUID │    │ + quantity: Integer│
+                       │ + isActive: Boolean│   │ + unitPrice: Decimal│
+┌─────────────────┐    └─────────────────┘    │ + totalPrice: Decimal│
+│  ShoppingCart   │                           └─────────────────┘
+├─────────────────┤    ┌─────────────────┐    
+│ + cartId: UUID  │    │     Payment     │    ┌─────────────────┐
+│ + userId: UUID  │    ├─────────────────┤    │     Review      │
+│ + createdAt: DateTime│ │ + paymentId: UUID│   ├─────────────────┤
+│ + updatedAt: DateTime│ │ + orderId: UUID │    │ + reviewId: UUID│
+└─────────────────┘    │ + amount: Decimal│    │ + userId: UUID  │
+         │              │ + method: PaymentMethod│ + productId: UUID│
+         │              │ + status: PaymentStatus│ + rating: Integer│
+┌─────────────────┐    │ + transactionId: String│ + comment: Text │
+│    CartItem     │    │ + processedAt: DateTime│ + createdAt: DateTime│
+├─────────────────┤    └─────────────────┘    └─────────────────┘
+│ + itemId: UUID  │    
+│ + cartId: UUID  │    ┌─────────────────┐    ┌─────────────────┐
+│ + productId: UUID│   │   Notification  │    │   AuditLog      │
+│ + quantity: Integer│  ├─────────────────┤    ├─────────────────┤
+│ + addedAt: DateTime│  │ + notificationId: UUID│ + logId: UUID   │
+└─────────────────┘    │ + userId: UUID  │    │ + userId: UUID  │
+                       │ + type: NotificationType│ + action: String│
+                       │ + message: String│    │ + entityType: String│
+                       │ + isRead: Boolean│    │ + entityId: UUID│
+                       │ + createdAt: DateTime│ │ + timestamp: DateTime│
+                       └─────────────────┘    │ + ipAddress: String│
+                                              │ + userAgent: String│
+                                              └─────────────────┘
 ```
+
+### Entity Relationships
+- User (1) ←→ (M) Order
+- User (1) ←→ (1) ShoppingCart
+- ShoppingCart (1) ←→ (M) CartItem
+- Product (1) ←→ (M) CartItem
+- Product (1) ←→ (M) OrderItem
+- Order (1) ←→ (M) OrderItem
+- Order (1) ←→ (1) Payment
+- User (1) ←→ (M) Review
+- Product (1) ←→ (M) Review
+- Category (1) ←→ (M) Product
+- User (1) ←→ (M) Notification
+- User (1) ←→ (M) AuditLog
 
 ## High-Level Design Document
 
 ### Architecture Overview
 
-**Microservices Architecture with Event-Driven Design**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Load Balancer                            │
+│                     (AWS ALB/CloudFlare)                       │
+└─────────────────────┬───────────────────────────────────────────┘
+                      │
+┌─────────────────────┼───────────────────────────────────────────┐
+│                     │           Web Tier                        │
+│  ┌─────────────────┐│┌─────────────────┐ ┌─────────────────┐   │
+│  │   React SPA     │││   Admin Portal  │ │  Seller Portal  │   │
+│  │   (Consumer)    │││   (React/Vue)   │ │   (React/Vue)   │   │
+│  └─────────────────┘│└─────────────────┘ └─────────────────┘   │
+└─────────────────────┼───────────────────────────────────────────┘
+                      │
+┌─────────────────────┼───────────────────────────────────────────┐
+│                     │        API Gateway                        │
+│                ┌────▼────┐                                      │
+│                │ Kong/   │  ┌─────────────────┐                 │
+│                │ AWS API │  │ Rate Limiting   │                 │
+│                │ Gateway │  │ Authentication  │                 │
+│                └─────────┘  │ Request Logging │                 │
+│                             └─────────────────┘                 │
+└─────────────────────┬───────────────────────────────────────────┘
+                      │
+┌─────────────────────┼───────────────────────────────────────────┐
+│                     │       Application Tier                    │
+│  ┌─────────────────┐│┌─────────────────┐ ┌─────────────────┐   │
+│  │   User Service  │││ Product Service │ │  Order Service  │   │
+│  │   - Auth        │││ - Catalog       │ │  - Cart         │   │
+│  │   - Profile     │││ - Search        │ │  - Checkout     │   │
+│  │   - RBAC        │││ - Inventory     │ │  - Tracking     │   │
+│  └─────────────────┘│└─────────────────┘ └─────────────────┘   │
+│                     │                                           │
+│  ┌─────────────────┐│┌─────────────────┐ ┌─────────────────┐   │
+│  │Payment Service  │││Notification Svc │ │  Admin Service  │   │
+│  │- Gateway Integ  │││ - Email/SMS     │ │  - Dashboard    │   │
+│  │- PCI Compliance │││ - Push Notif    │ │  - Reports      │   │
+│  │- Fraud Detection│││ - Templates     │ │  - Config       │   │
+│  └─────────────────┘│└─────────────────┘ └─────────────────┘   │
+└─────────────────────┼───────────────────────────────────────────┘
+                      │
+┌─────────────────────┼───────────────────────────────────────────┐
+│                     │         Data Tier                         │
+│  ┌─────────────────┐│┌─────────────────┐ ┌─────────────────┐   │
+│  │   PostgreSQL    │││    Redis Cache  │ │  Elasticsearch  │   │
+│  │   (Primary DB)  │││   - Sessions    │ │   - Search      │   │
+│  │   - ACID        │││   - Cart Data   │ │   - Analytics   │   │
+│  │   - Encrypted   │││   - Rate Limit  │ │   - Logging     │   │
+│  └─────────────────┘│└─────────────────┘ └─────────────────┘   │
+│                     │                                           │
+│  ┌─────────────────┐│┌─────────────────┐ ┌─────────────────┐   │
+│  │   AWS S3/CDN    │││   Message Queue │ │   Audit Store   │   │
+│  │   - Images      │││   - RabbitMQ    │ │   - Compliance  │   │
+│  │   - Static      │││   - Event Proc  │ │   - Immutable   │   │
+│  │   - Backups     │││   - Async Tasks │ │   - Encrypted   │   │
+│  └─────────────────┘│└─────────────────┘ └─────────────────┘   │
+└─────────────────────┼───────────────────────────────────────────┘
+                      │
+┌─────────────────────┼───────────────────────────────────────────┐
+│                     │      External Integrations               │
+│  ┌─────────────────┐│┌─────────────────┐ ┌─────────────────┐   │
+│  │Payment Gateways │││   Email/SMS     │ │   Logistics     │   │
+│  │- Stripe/PayPal  │││   - SendGrid    │ │   - Shipping    │   │
+│  │- Bank APIs      │││   - Twilio      │ │   - Tracking    │   │
+│  │- Fraud Services │││   - Templates   │ │   - Partners    │   │
+│  └─────────────────┘│└─────────────────┘ └─────────────────┘   │
+└─────────────────────┴───────────────────────────────────────────┘
+```
 
-#### Core Components:
+### Major Components
 
-1. **API Gateway**
-   - Rate limiting and throttling
-   - Authentication and authorization
-   - Request routing and load balancing
-   - TLS 1.3 termination
+#### 1. User Service
+- **Authentication**: JWT-based with refresh tokens
+- **Authorization**: RBAC with role hierarchy (Consumer, Seller, Admin)
+- **Profile Management**: CRUD operations with validation
+- **Session Management**: Redis-backed with configurable TTL
 
-2. **User Management Service**
-   - Registration and authentication
-   - Profile management
-   - RBAC/ABAC implementation
-   - JWT token management
+#### 2. Product Service
+- **Catalog Management**: Product CRUD with image handling
+- **Search Engine**: Elasticsearch integration with faceted search
+- **Inventory Management**: Real-time stock tracking
+- **Category Management**: Hierarchical categorization
 
-3. **Product Catalog Service**
-   - Product CRUD operations
-   - Search and filtering (Elasticsearch)
-   - Category management
-   - Inventory tracking
+#### 3. Order Service
+- **Shopping Cart**: Redis-backed persistent cart
+- **Checkout Process**: Multi-step validation and processing
+- **Order Management**: Status tracking and updates
+- **Order History**: Comprehensive order tracking
 
-4. **Shopping Cart Service**
-   - Cart state management
-   - Session handling
-   - Cart persistence
+#### 4. Payment Service
+- **Gateway Integration**: Multi-provider support (Stripe, PayPal)
+- **PCI DSS Compliance**: Tokenization and secure processing
+- **Fraud Detection**: ML-based risk assessment
+- **Refund Management**: Automated and manual refund processing
 
-5. **Order Management Service**
-   - Order processing workflow
-   - Order status tracking
-   - Order history
-
-6. **Payment Service**
-   - PCI DSS compliant payment processing
-   - Multiple payment gateway integration
-   - Fraud detection
-   - Refund processing
-
-7. **Notification Service**
-   - Email/SMS notifications
-   - Push notifications
-   - Event-driven messaging
-
-8. **Analytics & Reporting Service**
-   - Business metrics tracking
-   - Compliance reporting
-   - Audit logging
+#### 5. Notification Service
+- **Multi-channel**: Email, SMS, Push notifications
+- **Template Management**: Dynamic content generation
+- **Delivery Tracking**: Status monitoring and retry logic
+- **Preference Management**: User notification preferences
 
 ### Integration Points
 
-1. **External Payment Gateways**
-   - Stripe, PayPal integration
-   - PCI DSS compliance
-   - Webhook handling
+#### Internal Service Communication
+- **API Gateway**: Centralized routing and security
+- **Service Mesh**: Istio for service-to-service communication
+- **Message Queue**: RabbitMQ for async processing
+- **Event Streaming**: Apache Kafka for real-time events
 
-2. **Search Engine**
-   - Elasticsearch for product search
-   - Real-time indexing
+#### External Integrations
+- **Payment Processors**: RESTful API integration with webhooks
+- **Email/SMS Providers**: API-based with fallback providers
+- **Logistics Partners**: API integration for shipping and tracking
+- **CDN**: CloudFlare for global content delivery
 
-3. **CDN Integration**
-   - Static asset delivery
-   - Image optimization
+### Security and Compliance Features
 
-4. **Email/SMS Providers**
-   - Transactional notifications
-   - Marketing communications
+#### Authentication & Authorization
+- **Multi-Factor Authentication**: TOTP and SMS-based 2FA
+- **JWT Tokens**: RS256 signed with 15-minute expiry
+- **Role-Based Access Control**: Granular permissions matrix
+- **Session Management**: Secure session handling with Redis
 
-### Security & Compliance Features
+#### Data Protection
+- **Encryption at Rest**: AES-256 for database and file storage
+- **Encryption in Transit**: TLS 1.3 for all communications
+- **PII Protection**: Field-level encryption for sensitive data
+- **Key Management**: AWS KMS/HashiCorp Vault integration
 
-#### Security Implementation:
-- **Encryption**: AES-256 for data at rest, TLS 1.3 for data in transit
-- **Authentication**: Multi-factor authentication, OAuth 2.0/OIDC
-- **Authorization**: RBAC with fine-grained permissions
-- **Input Validation**: Comprehensive sanitization and validation
-- **Output Filtering**: XSS prevention, data masking
-- **API Security**: Rate limiting, CORS policies
-- **Secrets Management**: HashiCorp Vault integration
+#### Input Validation & Output Filtering
+- **Schema Validation**: JSON Schema validation for all inputs
+- **SQL Injection Prevention**: Parameterized queries only
+- **XSS Protection**: Content Security Policy and output encoding
+- **CSRF Protection**: Token-based validation
 
-#### Compliance Features:
-- **PCI DSS**: Secure payment processing, tokenization
-- **Data Retention**: Automated data lifecycle management
-- **Consent Management**: GDPR/CCPA compliance
-- **Data Lineage**: Complete audit trail
+#### Audit & Compliance
+- **Comprehensive Logging**: All user actions and system events
+- **Immutable Audit Trail**: Tamper-proof log storage
+- **Data Retention**: Configurable retention policies
 - **Compliance Reporting**: Automated compliance dashboards
+
+#### Fraud Prevention
+- **Real-time Monitoring**: ML-based anomaly detection
+- **Device Fingerprinting**: Browser and device identification
+- **Velocity Checks**: Rate limiting and pattern analysis
+- **Risk Scoring**: Dynamic risk assessment engine
 
 ### Data Flow Architecture
 
+#### User Registration Flow
 ```
-Client → API Gateway → Load Balancer → Microservices
-                                    ↓
-Event Bus ← Database ← Service Layer ← Business Logic
-    ↓
-Notification Service → External Providers
+User → API Gateway → User Service → Validation → Database → Email Service → User
 ```
 
-### Error Handling & Resilience
+#### Product Search Flow
+```
+User → CDN/Cache → API Gateway → Product Service → Elasticsearch → Cache → User
+```
 
-1. **Circuit Breaker Pattern**
-   - Service failure isolation
-   - Automatic recovery mechanisms
+#### Checkout Flow
+```
+User → API Gateway → Order Service → Inventory Check → Payment Service → 
+Payment Gateway → Order Confirmation → Notification Service → User
+```
 
-2. **Retry Mechanisms**
-   - Exponential backoff
-   - Dead letter queues
+#### Order Processing Flow
+```
+Order Created → Message Queue → Inventory Service → Seller Notification → 
+Fulfillment → Shipping Service → Tracking Update → Customer Notification
+```
 
-3. **Comprehensive Logging**
-   - Structured logging (JSON)
-   - Centralized log aggregation
-   - Real-time monitoring
+### Performance Specifications
 
-4. **Health Checks**
-   - Service health monitoring
-   - Automated failover
+#### Response Time Requirements
+- **Page Load**: ≤2 seconds (95th percentile)
+- **API Response**: ≤500ms (average)
+- **Search Results**: ≤1 second
+- **Checkout Process**: ≤5 seconds end-to-end
 
-### Performance Optimization
+#### Scalability Targets
+- **Concurrent Users**: 100,000 active sessions
+- **Peak Traffic**: 10,000 requests/second
+- **Database Connections**: Auto-scaling connection pools
+- **Horizontal Scaling**: Kubernetes-based auto-scaling
 
-- **Caching Strategy**: Redis for session and frequently accessed data
-- **Database Optimization**: Read replicas, connection pooling
-- **CDN**: Global content delivery
-- **Async Processing**: Message queues for heavy operations
+#### Availability Requirements
+- **System Uptime**: 99.9% (8.76 hours downtime/year)
+- **Planned Maintenance**: <4 hours/month
+- **Disaster Recovery**: RTO: 4 hours, RPO: 1 hour
+- **Multi-Region**: Active-passive deployment
 
-## Validation Report
+### Error Handling and Resilience
 
-### Requirements Coverage Checklist:
-✅ User Registration/Authentication
-✅ Product Catalog Management
-✅ Search & Filter Functionality
-✅ Shopping Cart Operations
-✅ Secure Checkout Process
-✅ Order Tracking System
-✅ Role-Based Access Control
-✅ Seller Dashboard
-✅ Admin Dashboard
-✅ Payment Processing
-✅ Notification System
-✅ Performance Requirements (≤2 sec page load)
-✅ Security Requirements (PCI DSS, Encryption)
-✅ Scalability (100,000 concurrent users)
-✅ Availability (99.9% uptime)
+#### Circuit Breaker Pattern
+- **Service Isolation**: Prevent cascade failures
+- **Fallback Mechanisms**: Graceful degradation
+- **Health Checks**: Automated service monitoring
+- **Recovery Procedures**: Automatic and manual recovery
 
-### Compliance Verification:
-✅ PCI DSS Level 1 compliance architecture
-✅ GDPR data protection measures
-✅ SOC 2 Type II controls
-✅ WCAG 2.1 AA accessibility standards
-✅ ISO 27001 security framework alignment
+#### Retry Logic
+- **Exponential Backoff**: Progressive retry delays
+- **Dead Letter Queues**: Failed message handling
+- **Timeout Configuration**: Service-specific timeouts
+- **Idempotency**: Safe retry operations
 
-### Error Handling Coverage:
-✅ Circuit breaker patterns implemented
-✅ Retry mechanisms with exponential backoff
-✅ Comprehensive audit logging
-✅ Graceful degradation strategies
-✅ Real-time monitoring and alerting
+#### Monitoring and Alerting
+- **Application Monitoring**: APM with Datadog/New Relic
+- **Infrastructure Monitoring**: Prometheus + Grafana
+- **Log Aggregation**: ELK Stack for centralized logging
+- **Alert Management**: PagerDuty integration for incidents
+
+### Deployment and DevOps
+
+#### Containerization
+- **Docker**: Application containerization
+- **Kubernetes**: Container orchestration
+- **Helm Charts**: Application deployment templates
+- **Service Mesh**: Istio for traffic management
+
+#### CI/CD Pipeline
+- **Source Control**: Git with branch protection
+- **Build Pipeline**: Jenkins/GitHub Actions
+- **Testing**: Automated unit, integration, and E2E tests
+- **Deployment**: Blue-green deployment strategy
+
+#### Environment Management
+- **Development**: Local development with Docker Compose
+- **Staging**: Production-like environment for testing
+- **Production**: Multi-AZ deployment with auto-scaling
+- **Disaster Recovery**: Cross-region backup environment
