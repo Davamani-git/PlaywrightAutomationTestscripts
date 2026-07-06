@@ -1,163 +1,178 @@
-# Low-Level Design Document
+# Low-Level Design (LLD) Document
 
-## 1. Introduction
+## 1. Executive Summary
 
-### 1.1 Purpose
-This Low-Level Design (LLD) document provides detailed technical specifications for the Playwright Automation Test Scripts project. Since no High-Level Design (HLD) documents were found in the repository, this LLD serves as the foundational technical documentation.
+This Low-Level Design document has been generated based on the analysis of the HLD folder structure. Since no HLD files were found in the specified repository folder, this LLD provides a foundational framework for Playwright automation test scripts implementation.
 
-### 1.2 Scope
-This document covers the architectural components, implementation details, and technical specifications for automated testing using Playwright framework.
+## 2. System Architecture Overview
 
-## 2. System Architecture
-
-### 2.1 Overall Architecture
+### 2.1 Component Architecture
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Test Execution Layer                     │
+│                    Test Automation Framework                │
 ├─────────────────────────────────────────────────────────────┤
-│                    Test Framework Layer                     │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
-│  │   Test      │  │   Page      │  │    Utilities &      │ │
-│  │   Scripts   │  │   Objects   │  │    Helpers          │ │
+│  │   Test      │  │   Page      │  │     Utilities       │ │
+│  │   Scripts   │  │   Objects   │  │     & Helpers       │ │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘ │
 ├─────────────────────────────────────────────────────────────┤
-│                    Playwright Core Layer                    │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
-│  │   Browser   │  │   Network   │  │    Element          │ │
-│  │   Control   │  │   Handling  │  │    Interaction      │ │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘ │
+│                    Playwright Core                          │
 ├─────────────────────────────────────────────────────────────┤
-│                    Browser Layer                            │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
-│  │   Chromium  │  │   Firefox   │  │    WebKit           │ │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘ │
+│                    Browser Engines                          │
+│         (Chromium, Firefox, WebKit)                        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 Component Specifications
+## 3. Detailed Component Specifications
 
-#### 2.2.1 Test Scripts Component
-- **Purpose**: Contains automated test cases
-- **Technology**: JavaScript/TypeScript with Playwright
-- **Structure**: Modular test files organized by feature/functionality
-- **Dependencies**: Playwright test runner, assertion libraries
+### 3.1 Test Scripts Component
 
-#### 2.2.2 Page Objects Component
-- **Purpose**: Encapsulates web page elements and actions
-- **Pattern**: Page Object Model (POM)
-- **Structure**: Class-based approach with methods for page interactions
-- **Benefits**: Maintainability, reusability, and reduced code duplication
+#### 3.1.1 Class Structure
+```typescript
+class BaseTest {
+  protected page: Page;
+  protected context: BrowserContext;
+  
+  async setup(): Promise<void>
+  async teardown(): Promise<void>
+  async takeScreenshot(name: string): Promise<void>
+}
 
-#### 2.2.3 Utilities & Helpers Component
-- **Purpose**: Common functions and utilities for test execution
-- **Includes**: Data generators, configuration handlers, reporting utilities
-- **Structure**: Modular utility functions and helper classes
-
-## 3. Data Flow Architecture
-
-### 3.1 Test Execution Flow
-```
-Test Initiation
-      ↓
-Configuration Loading
-      ↓
-Browser Launch
-      ↓
-Page Navigation
-      ↓
-Element Interaction
-      ↓
-Assertion Validation
-      ↓
-Result Reporting
-      ↓
-Browser Cleanup
+class LoginTest extends BaseTest {
+  async testValidLogin(): Promise<void>
+  async testInvalidLogin(): Promise<void>
+}
 ```
 
-### 3.2 Data Flow Diagram
-```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   Test      │───▶│   Page      │───▶│   Browser   │
-│   Runner    │    │   Object    │    │   Instance  │
-└─────────────┘    └─────────────┘    └─────────────┘
-       │                   │                   │
-       ▼                   ▼                   ▼
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   Test      │    │   Element   │    │   Network   │
-│   Results   │    │   Actions   │    │   Requests  │
-└─────────────┘    └─────────────┘    └─────────────┘
+#### 3.1.2 Methods and Properties
+- **setup()**: Initialize browser context and page
+- **teardown()**: Clean up resources and close browser
+- **takeScreenshot()**: Capture screenshots for reporting
+
+### 3.2 Page Objects Component
+
+#### 3.2.1 Class Structure
+```typescript
+class BasePage {
+  protected page: Page;
+  protected url: string;
+  
+  constructor(page: Page, url: string)
+  async navigate(): Promise<void>
+  async waitForLoad(): Promise<void>
+}
+
+class LoginPage extends BasePage {
+  private usernameField: string = '#username';
+  private passwordField: string = '#password';
+  private submitButton: string = '#submit';
+  
+  async enterCredentials(username: string, password: string): Promise<void>
+  async clickSubmit(): Promise<void>
+}
 ```
 
-## 4. Sequence Diagrams
+#### 3.2.2 Locator Strategies
+- CSS Selectors for stable elements
+- Data attributes for dynamic content
+- XPath for complex element relationships
 
-### 4.1 Test Execution Sequence
-```
-Test Runner    Page Object    Browser    Application
-     │              │           │            │
-     │──launch()───▶│           │            │
-     │              │──goto()──▶│            │
-     │              │           │──request──▶│
-     │              │           │◀─response──│
-     │──interact()─▶│           │            │
-     │              │──click()─▶│            │
-     │              │           │──action───▶│
-     │──assert()───▶│           │            │
-     │              │──getText()▶│            │
-     │              │           │──query────▶│
-     │              │           │◀─data─────│
-     │◀─result─────│           │            │
-     │──cleanup()──▶│           │            │
-     │              │──close()─▶│            │
+### 3.3 Utilities Component
+
+#### 3.3.1 Configuration Manager
+```typescript
+class ConfigManager {
+  static getBaseUrl(): string
+  static getBrowserType(): string
+  static getTimeout(): number
+}
 ```
 
-### 4.2 Page Object Interaction Sequence
-```
-Test Script    Page Object    Element Locator    Browser API
-     │              │               │               │
-     │──action()───▶│               │               │
-     │              │──locate()────▶│               │
-     │              │               │──find()──────▶│
-     │              │               │◀─element─────│
-     │              │◀─locator─────│               │
-     │              │──perform()───────────────────▶│
-     │              │◀─result──────────────────────│
-     │◀─response───│               │               │
+#### 3.3.2 Data Helpers
+```typescript
+class DataHelper {
+  static generateTestData(): TestData
+  static loadTestData(filename: string): Promise<TestData[]>
+}
 ```
 
-## 5. Implementation Details
+## 4. Data Flow Diagrams
 
-### 5.1 Project Structure
+### 4.1 Test Execution Flow
 ```
-PlaywrightAutomationTestscripts/
+Test Runner → Test Script → Page Object → Browser Action → Application
+     ↓             ↓            ↓             ↓              ↓
+   Start         Setup       Navigate      Click/Type     Response
+     ↓             ↓            ↓             ↓              ↓
+  Execute       Interact     Validate      Assert         Report
+```
+
+### 4.2 Data Management Flow
+```
+Test Data Files → Data Helper → Test Script → Page Object → Browser
+      ↓              ↓             ↓            ↓           ↓
+   JSON/CSV      Parse Data    Use Data    Fill Forms   Submit
+```
+
+## 5. Sequence Diagrams
+
+### 5.1 Login Test Sequence
+```
+Test Script    Page Object    Browser       Application
+     │              │           │              │
+     │─────setup────→│           │              │
+     │              │──launch───→│              │
+     │              │           │              │
+     │──navigate────→│           │              │
+     │              │─────go────→│──────────────→│
+     │              │           │              │
+     │─enterCreds───→│           │              │
+     │              │───type────→│──────────────→│
+     │              │           │              │
+     │──clickSubmit─→│           │              │
+     │              │───click───→│──────────────→│
+     │              │           │←─────────────│
+     │              │←──────────│              │
+     │←─────────────│           │              │
+     │              │           │              │
+     │────assert────→│           │              │
+     │              │           │              │
+```
+
+## 6. Implementation Details
+
+### 6.1 Project Structure
+```
+project/
 ├── tests/
-│   ├── e2e/
-│   ├── integration/
-│   └── unit/
+│   ├── login.spec.ts
+│   ├── navigation.spec.ts
+│   └── checkout.spec.ts
 ├── pages/
-│   ├── basePage.js
-│   └── specificPages/
+│   ├── BasePage.ts
+│   ├── LoginPage.ts
+│   └── HomePage.ts
 ├── utils/
-│   ├── helpers.js
-│   ├── config.js
-│   └── dataGenerators.js
-├── fixtures/
-│   └── testData/
-├── reports/
-├── playwright.config.js
+│   ├── ConfigManager.ts
+│   ├── DataHelper.ts
+│   └── ReportHelper.ts
+├── data/
+│   ├── testdata.json
+│   └── users.csv
+├── playwright.config.ts
 └── package.json
 ```
 
-### 5.2 Configuration Management
-```javascript
-// playwright.config.js
-module.exports = {
+### 6.2 Configuration Setup
+```typescript
+// playwright.config.ts
+export default {
   testDir: './tests',
   timeout: 30000,
   retries: 2,
   use: {
-    browserName: 'chromium',
+    baseURL: 'https://example.com',
     headless: true,
-    viewport: { width: 1280, height: 720 },
     screenshot: 'only-on-failure',
     video: 'retain-on-failure'
   },
@@ -169,124 +184,62 @@ module.exports = {
 };
 ```
 
-### 5.3 Base Page Object Implementation
-```javascript
-class BasePage {
-  constructor(page) {
-    this.page = page;
-  }
-
-  async navigate(url) {
-    await this.page.goto(url);
-  }
-
-  async clickElement(selector) {
-    await this.page.click(selector);
-  }
-
-  async fillText(selector, text) {
-    await this.page.fill(selector, text);
-  }
-
-  async getText(selector) {
-    return await this.page.textContent(selector);
-  }
-
-  async waitForElement(selector) {
-    await this.page.waitForSelector(selector);
+### 6.3 Error Handling Strategy
+```typescript
+class ErrorHandler {
+  static async handleTestFailure(error: Error, page: Page): Promise<void> {
+    await page.screenshot({ path: `error-${Date.now()}.png` });
+    console.error('Test failed:', error.message);
+    throw error;
   }
 }
 ```
 
-### 5.4 Test Implementation Pattern
-```javascript
-const { test, expect } = require('@playwright/test');
-const HomePage = require('../pages/homePage');
+## 7. Security Considerations
 
-test.describe('Feature Tests', () => {
-  test('should perform specific action', async ({ page }) => {
-    const homePage = new HomePage(page);
-    
-    await homePage.navigate('/home');
-    await homePage.performAction();
-    
-    const result = await homePage.getResult();
-    expect(result).toBe('expected_value');
-  });
-});
-```
+### 7.1 Credential Management
+- Use environment variables for sensitive data
+- Implement secure storage for test credentials
+- Avoid hardcoding passwords in test scripts
 
-## 6. Error Handling and Logging
+### 7.2 Data Protection
+- Mask sensitive data in logs and reports
+- Implement data cleanup after test execution
+- Use secure connections (HTTPS) for all interactions
 
-### 6.1 Error Handling Strategy
-- **Try-Catch Blocks**: Wrap critical operations
-- **Retry Mechanism**: Automatic retry for flaky tests
-- **Graceful Degradation**: Fallback strategies for failures
-- **Custom Error Types**: Specific error classes for different scenarios
+## 8. Performance Optimization
 
-### 6.2 Logging Implementation
-```javascript
-class Logger {
-  static info(message) {
-    console.log(`[INFO] ${new Date().toISOString()}: ${message}`);
-  }
+### 8.1 Parallel Execution
+- Configure multiple workers for test execution
+- Implement test isolation strategies
+- Use browser context pooling
 
-  static error(message, error) {
-    console.error(`[ERROR] ${new Date().toISOString()}: ${message}`, error);
-  }
+### 8.2 Resource Management
+- Implement proper cleanup in teardown methods
+- Use page object caching where appropriate
+- Optimize selector strategies for performance
 
-  static debug(message) {
-    if (process.env.DEBUG) {
-      console.log(`[DEBUG] ${new Date().toISOString()}: ${message}`);
-    }
-  }
+## 9. Monitoring and Reporting
+
+### 9.1 Test Reporting
+```typescript
+class ReportGenerator {
+  static generateHTMLReport(): void
+  static generateJUnitReport(): void
+  static sendSlackNotification(results: TestResults): void
 }
 ```
 
-## 7. Performance Considerations
+### 9.2 Metrics Collection
+- Test execution time tracking
+- Failure rate monitoring
+- Browser performance metrics
 
-### 7.1 Optimization Strategies
-- **Parallel Execution**: Run tests concurrently
-- **Browser Reuse**: Share browser instances where possible
-- **Resource Management**: Proper cleanup of resources
-- **Selective Testing**: Run only relevant tests based on changes
+## 10. Deployment and CI/CD Integration
 
-### 7.2 Performance Metrics
-- Test execution time
-- Browser resource usage
-- Network request optimization
-- Memory consumption monitoring
-
-## 8. Security Considerations
-
-### 8.1 Security Measures
-- **Credential Management**: Secure storage of test credentials
-- **Environment Isolation**: Separate test and production environments
-- **Data Protection**: Anonymization of sensitive test data
-- **Access Control**: Restricted access to test resources
-
-### 8.2 Security Implementation
-```javascript
-class SecurityUtils {
-  static getCredentials() {
-    return {
-      username: process.env.TEST_USERNAME,
-      password: process.env.TEST_PASSWORD
-    };
-  }
-
-  static sanitizeData(data) {
-    // Remove sensitive information
-    return data.replace(/password|token|key/gi, '***');
-  }
-}
-```
-
-## 9. Deployment and CI/CD Integration
-
-### 9.1 CI/CD Pipeline
+### 10.1 Pipeline Configuration
 ```yaml
-# GitHub Actions Workflow
+# .github/workflows/tests.yml
 name: Playwright Tests
 on: [push, pull_request]
 jobs:
@@ -295,68 +248,26 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-node@v3
-        with:
-          node-version: '18'
       - run: npm ci
       - run: npx playwright install
-      - run: npx playwright test
-      - uses: actions/upload-artifact@v3
-        with:
-          name: playwright-report
-          path: playwright-report/
+      - run: npm test
 ```
 
-### 9.2 Environment Configuration
-- **Development**: Local development setup
-- **Staging**: Pre-production testing environment
-- **Production**: Production-like testing environment
-
-## 10. Monitoring and Reporting
-
-### 10.1 Test Reporting
-- **HTML Reports**: Detailed test execution reports
-- **JSON Reports**: Machine-readable test results
-- **Screenshots**: Visual evidence of test failures
-- **Videos**: Recorded test execution for debugging
-
-### 10.2 Monitoring Dashboard
-- Test execution trends
-- Failure rate analysis
-- Performance metrics
-- Environment health status
+### 10.2 Environment Management
+- Separate configurations for dev, staging, production
+- Environment-specific test data management
+- Conditional test execution based on environment
 
 ## 11. Maintenance and Updates
 
-### 11.1 Maintenance Schedule
-- **Weekly**: Review test results and update flaky tests
-- **Monthly**: Update dependencies and review performance
-- **Quarterly**: Architecture review and optimization
+### 11.1 Version Control Strategy
+- Semantic versioning for test framework updates
+- Regular dependency updates and security patches
+- Backward compatibility considerations
 
-### 11.2 Update Procedures
-- Dependency updates with compatibility testing
-- Test case updates based on application changes
-- Framework upgrades with migration planning
+### 11.2 Documentation Updates
+- Automated documentation generation
+- Test case documentation standards
+- Knowledge transfer procedures
 
-## 12. Conclusion
-
-This LLD document provides a comprehensive technical foundation for the Playwright Automation Test Scripts project. It establishes the architectural framework, implementation patterns, and operational procedures necessary for maintaining a robust and scalable test automation solution.
-
-### 12.1 Key Benefits
-- Scalable test architecture
-- Maintainable code structure
-- Comprehensive error handling
-- Performance optimization
-- Security compliance
-
-### 12.2 Future Enhancements
-- AI-powered test generation
-- Advanced reporting analytics
-- Cross-platform mobile testing
-- API testing integration
-
----
-
-**Document Version**: 1.0  
-**Last Updated**: Generated from repository analysis  
-**Status**: Active  
-**Review Date**: To be scheduled
+This LLD document provides a comprehensive foundation for implementing Playwright automation test scripts. The design emphasizes modularity, maintainability, and scalability while following industry best practices for test automation frameworks.
