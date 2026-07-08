@@ -1,0 +1,103 @@
+# azure-pipelines.yml
+
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+- group: Experience Studio Variable Group
+- name: APP_LOCATION
+  value: '.'
+- name: NODE_VERSION
+  value: '22.x'
+- name: API_LOCATION
+  value: ''
+- name: OUTPUT_LOCATION
+  value: 'dist'
+- name: SWA_APP_NAME
+  value: 'sample-swa-test-2'
+- name: SWA_LOCATION
+  value: 'East US 2'
+
+stages:
+- stage: ProvisionAndDeploy
+  displayName: 'Provision Infrastructure and Deploy App'
+  jobs:
+  - job: ProvisionAndDeployJob
+    displayName: 'Provision SWA, Build, & Deploy'
+    steps:
+    - checkout: self
+      submodules: true
+
+    - task: NodeTool@0
+      inputs:
+        versionSpec: $(NODE_VERSION)
+      displayName: 'Install Node.js'
+
+    - task: AzureCLI@2
+      name: ProvisionSwa
+      displayName: 'Provision Static Web App and Get Token'
+      inputs:
+        azureSubscription: $(AZURE_SERVICE_CONNECTION_NAME)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          set -e # Exit immediately if a command exits with a non-zero status.
+
+          # Check if the Static Web App already exists
+          echo "Checking for existing Static Web App: $(SWA_APP_NAME)..."
+          if az staticwebapp show --name $(SWA_APP_NAME) --resource-group $(SWA_RESOURCE_GROUP_NAME) &> /dev/null; then
+            # SWA Exists: Get the existing deployment token
+            echo "Static Web App already exists. Fetching deployment token..."
+            TOKEN=$(az staticwebapp secrets list \
+              --name $(SWA_APP_NAME) \
+              --resource-group $(SWA_RESOURCE_GROUP_NAME) \
+              --query "properties.apiKey" -o tsv)
+          else
+            # SWA Does Not Exist: Create it and get the new token
+            echo "Static Web App not found. Creating a new one with Standard SKU..."
+            CREATE_OUTPUT=$(az staticwebapp create \
+              --name $(SWA_APP_NAME) \
+              --resource-group $(SWA_RESOURCE_GROUP_NAME) \
+              --location "$(SWA_LOCATION)" \
+              --sku "Standard")
+
+            TOKEN=$(echo $CREATE_OUTPUT | jq -r .deploymentToken)
+            echo "Static Web App created successfully."
+
+            # --- THE FIX IS HERE ---
+            # Wait for 30 seconds to allow the new deployment token to become active across Azure.
+            echo "Waiting for 30 seconds for token to propagate..."
+            sleep 30
+          fi
+
+          # Final check to ensure the token is not empty
+          if [ -z "$TOKEN" ]; then
+            echo "##vso[task.logissue type=error]Failed to retrieve SWA deployment token."
+            exit 1
+          fi
+          
+          # For debugging: Check the length of the token to ensure it's not empty/malformed
+          echo "Token retrieved. Length: ${#TOKEN}"
+
+          # Set the token as a secret output variable for the next task
+          echo "##vso[task.setvariable variable=SwaDeploymentToken;issecret=true;isOutput=true]$TOKEN"
+
+    - task: Cache@2
+      inputs:
+        key: 'npm | "$(Agent.OS)" | $(APP_LOCATION)/package-lock.json'
+        restoreKeys: |
+          npm | "$(Agent.OS)"
+        path: '$(APP_LOCATION)/node_modules'
+      displayName: 'Cache node_modules'
+
+    - task: AzureStaticWebApp@0
+      displayName: 'Deploy to Azure Static Web App'
+      inputs:
+        app_location: $(APP_LOCATION)
+        api_location: $(API_LOCATION)
+        output_location: $(OUTPUT_LOCATION)
+        app_build_command: 'npm run build'
+        azure_static_web_apps_api_token: $(ProvisionSwa.SwaDeploymentToken)
