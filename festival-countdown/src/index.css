@@ -7,11 +7,12 @@
 @layer base {
   :root {
     /* Color Palette */
-    --background: 0 0% 93.3%; /* #eeeeee */
-    --surface: 0 0% 93.3%;    /* #eeeeee (for redundancy) */
-    --card: 0 0% 93.3%; /* #eeeeee */
-    --primary-text: 0 0% 6.7%;     /* #111111 */
-    --secondary-text: 0 0% 31.4%;  /* #505050 */
+    /* Updated background to an accessible teal tone */
+    --background: 180 40% 35%; /* ~#2b7a78 teal, good contrast with dark text */
+    --surface: 0 0% 93.3%;    /* #eeeeee (for redundancy / cards) */
+    --card: 0 0% 93.3%;       /* #eeeeee */
+    --primary-text: 0 0% 100%;     /* #ffffff - ensure strong contrast on teal */
+    --secondary-text: 0 0% 90%;    /* slightly dimmed white for secondary text */
 
     /* THEME UPDATE: Accent/Primary to vibrant green */
     --accent: 158 80% 42%;               /* #10B981 (HSL) */
@@ -42,6 +43,7 @@
   }
 
   .dark {
+    /* Keep dark mode background dark for contrast and avoid teal glare */
     --background: 0 0% 6.7%;
     --surface: 0 0% 10%;
     --card: 0 0% 10%;
@@ -79,11 +81,17 @@
   }
 
   body {
+    min-height: 100vh;
     background-color: hsl(var(--background));
     color: hsl(var(--primary-text));
     font-family: var(--font-primary);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  #root {
+    min-height: 100vh;
+    background-color: hsl(var(--background));
   }
 
   h1, h2, h3, h4, h5, h6 {
@@ -97,11 +105,5 @@
   }
   a:hover {
     text-decoration: underline;
-  }
-}
-
-@layer base {
-  * {
-    @apply border-border;
   }
 }
