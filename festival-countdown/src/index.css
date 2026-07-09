@@ -1,0 +1,107 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Color Palette */
+    --background: 0 0% 93.3%; /* #eeeeee */
+    --surface: 0 0% 93.3%;    /* #eeeeee (for redundancy) */
+    --card: 0 0% 93.3%; /* #eeeeee */
+    --primary-text: 0 0% 6.7%;     /* #111111 */
+    --secondary-text: 0 0% 31.4%;  /* #505050 */
+
+    /* THEME UPDATE: Accent/Primary to vibrant green */
+    --accent: 158 80% 42%;               /* #10B981 (HSL) */
+    --accent-secondary: 158 80% 32%;     /* Slightly darker green for secondary accents */
+    --primary: 158 80% 42%;              /* #10B981 */
+    --primary-hover: 160 94% 31%;        /* #059669 */
+    --primary-foreground: 0 0% 100%;     /* White */
+    
+    --success: 97.6 100% 36.1%;    /* #38b000 */
+    --error: 355 96.4% 43.5%;      /* #d90429 */
+    --border: 0 0% 93.3%;          /* #eeeeee */
+
+    /* Shadcn-like and fallback */
+    --foreground: var(--primary-text);
+    --secondary: var(--background);
+    --secondary-foreground: var(--secondary-text);
+    --muted: var(--surface);
+    --muted-foreground: var(--secondary-text);
+    --destructive: var(--error);
+    --destructive-foreground: var(--background);
+    --popover: var(--background);
+    --popover-foreground: var(--primary-text);
+    --card-foreground: var(--primary-text);
+    --input: var(--border);
+    --ring: 158 80% 42%;           /* Ring matches new green */
+    --radius: 0;
+    --font-primary: 'Inter', system-ui, sans-serif;
+  }
+
+  .dark {
+    --background: 0 0% 6.7%;
+    --surface: 0 0% 10%;
+    --card: 0 0% 10%;
+    --primary-text: 0 0% 93.3%;   /* #eeeeee */
+    --secondary-text: 0 0% 75%;
+    /* THEME UPDATE: Accent/Primary to vibrant green */
+    --accent: 158 80% 42%;              /* #10B981 */
+    --accent-secondary: 158 80% 32%;    /* Slightly darker */
+    --primary: 158 80% 42%;             /* #10B981 */
+    --primary-hover: 160 94% 31%;       /* #059669 (Darker) */
+    --primary-foreground: 0 0% 100%;    /* White */
+    --success: 97.6 100% 36.1%;
+    --error: 355 96.4% 43.5%;
+    --border: 0 0% 20%;
+    --foreground: var(--primary-text);
+    --secondary: var(--background);
+    --secondary-foreground: var(--secondary-text);
+    --muted: var(--surface);
+    --muted-foreground: var(--secondary-text);
+    --destructive: var(--error);
+    --destructive-foreground: var(--background);
+    --popover: var(--background);
+    --popover-foreground: var(--primary-text);
+    --card-foreground: var(--primary-text);
+    --input: var(--border);
+    --ring: 158 80% 42%;
+    --radius: 0;
+    --font-primary: 'Inter', system-ui, sans-serif;
+  }
+
+  html {
+    font-family: var(--font-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--primary-text));
+    font-family: var(--font-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-primary);
+    font-weight: 400;
+  }
+
+  a {
+    color: hsl(var(--accent));
+    text-decoration: none;
+  }
+  a:hover {
+    text-decoration: underline;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+}
