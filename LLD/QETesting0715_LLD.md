@@ -1,49 +1,54 @@
-# Low-Level Design Document - QETesting0715
+# Low-Level Design Document
 
-## Table of Contents
-1. [Component Specifications](#component-specifications)
-2. [Data Flow Diagrams](#data-flow-diagrams)
-3. [Sequence Diagrams](#sequence-diagrams)
-4. [Implementation Details](#implementation-details)
-5. [Database Schema](#database-schema)
-6. [API Specifications](#api-specifications)
-7. [Security Implementation](#security-implementation)
-8. [Error Handling](#error-handling)
-9. [Testing Strategy](#testing-strategy)
+## 1. Component Specifications
 
-## Component Specifications
+### 1.1 User Service Component
 
-### 1. User Service Component
-
-#### Class Structure
+#### Class: UserController
 ```java
 @RestController
 @RequestMapping("/api/v1/users")
+@Validated
 public class UserController {
     
     @Autowired
     private UserService userService;
     
     @PostMapping("/register")
-    public ResponseEntity<UserResponse> registerUser(@Valid @RequestBody UserRegistrationRequest request) {
+    public ResponseEntity<UserResponse> registerUser(
+        @Valid @RequestBody UserRegistrationRequest request) {
         UserResponse response = userService.registerUser(request);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
     
     @PostMapping("/login")
-    public ResponseEntity<AuthResponse> authenticateUser(@Valid @RequestBody LoginRequest request) {
+    public ResponseEntity<AuthResponse> login(
+        @Valid @RequestBody LoginRequest request) {
         AuthResponse response = userService.authenticateUser(request);
         return ResponseEntity.ok(response);
     }
     
-    @GetMapping("/profile/{userId}")
+    @GetMapping("/{userId}")
     @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
-    public ResponseEntity<UserProfileResponse> getUserProfile(@PathVariable UUID userId) {
-        UserProfileResponse profile = userService.getUserProfile(userId);
-        return ResponseEntity.ok(profile);
+    public ResponseEntity<UserProfileResponse> getUserProfile(
+        @PathVariable UUID userId) {
+        UserProfileResponse response = userService.getUserProfile(userId);
+        return ResponseEntity.ok(response);
+    }
+    
+    @PutMapping("/{userId}")
+    @PreAuthorize("#userId == authentication.principal.userId or hasRole('ADMIN')")
+    public ResponseEntity<UserResponse> updateUser(
+        @PathVariable UUID userId,
+        @Valid @RequestBody UserUpdateRequest request) {
+        UserResponse response = userService.updateUser(userId, request);
+        return ResponseEntity.ok(response);
     }
 }
+```
 
+#### Class: UserService
+```java
 @Service
 @Transactional
 public class UserService {
@@ -58,7 +63,7 @@ public class UserService {
     private JwtTokenProvider jwtTokenProvider;
     
     @Autowired
-    private AuditService auditService;
+    private NotificationService notificationService;
     
     public UserResponse registerUser(UserRegistrationRequest request) {
         validateUserRegistration(request);
@@ -74,13 +79,14 @@ public class UserService {
             .role(UserRole.CONSUMER)
             .isActive(true)
             .createdAt(LocalDateTime.now())
-            .updatedAt(LocalDateTime.now())
             .build();
             
         User savedUser = userRepository.save(user);
-        auditService.logUserAction(savedUser.getUserId(), "USER_REGISTERED", "User", savedUser.getUserId());
         
-        return UserResponse.from(savedUser);
+        // Send welcome notification
+        notificationService.sendWelcomeNotification(savedUser);
+        
+        return UserMapper.toResponse(savedUser);
     }
     
     public AuthResponse authenticateUser(LoginRequest request) {
@@ -88,27 +94,37 @@ public class UserService {
             .orElseThrow(() -> new AuthenticationException("Invalid credentials"));
             
         if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
-            auditService.logUserAction(user.getUserId(), "LOGIN_FAILED", "User", user.getUserId());
             throw new AuthenticationException("Invalid credentials");
+        }
+        
+        if (!user.getIsActive()) {
+            throw new AccountLockedException("Account is locked");
         }
         
         String accessToken = jwtTokenProvider.generateAccessToken(user);
         String refreshToken = jwtTokenProvider.generateRefreshToken(user);
         
-        auditService.logUserAction(user.getUserId(), "LOGIN_SUCCESS", "User", user.getUserId());
-        
         return AuthResponse.builder()
             .accessToken(accessToken)
             .refreshToken(refreshToken)
-            .tokenType("Bearer")
             .expiresIn(jwtTokenProvider.getAccessTokenExpiration())
-            .user(UserResponse.from(user))
+            .tokenType("Bearer")
             .build();
+    }
+    
+    private void validateUserRegistration(UserRegistrationRequest request) {
+        if (userRepository.existsByEmail(request.getEmail())) {
+            throw new UserAlreadyExistsException("Email already registered");
+        }
+        
+        if (!isValidPassword(request.getPassword())) {
+            throw new InvalidPasswordException("Password does not meet requirements");
+        }
     }
 }
 ```
 
-#### Database Entity
+#### Entity: User
 ```java
 @Entity
 @Table(name = "users")
@@ -130,15 +146,19 @@ public class User {
     private String password;
     
     @Column(name = "first_name", nullable = false)
+    @Size(min = 1, max = 50)
     private String firstName;
     
     @Column(name = "last_name", nullable = false)
+    @Size(min = 1, max = 50)
     private String lastName;
     
     @Column(name = "phone")
+    @Pattern(regexp = "^\\+?[1-9]\\d{1,14}$")
     private String phone;
     
     @Column(name = "address")
+    @Size(max = 500)
     private String address;
     
     @Enumerated(EnumType.STRING)
@@ -151,23 +171,23 @@ public class User {
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
     
-    @Column(name = "updated_at", nullable = false)
+    @Column(name = "updated_at")
     private LocalDateTime updatedAt;
     
-    @OneToOne(mappedBy = "user", cascade = CascadeType.ALL)
-    private UserProfile userProfile;
-    
-    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL)
-    private List<Order> orders;
+    @PreUpdate
+    public void preUpdate() {
+        this.updatedAt = LocalDateTime.now();
+    }
 }
 ```
 
-### 2. Product Service Component
+### 1.2 Product Service Component
 
-#### Class Structure
+#### Class: ProductController
 ```java
 @RestController
 @RequestMapping("/api/v1/products")
+@Validated
 public class ProductController {
     
     @Autowired
@@ -175,36 +195,45 @@ public class ProductController {
     
     @GetMapping
     public ResponseEntity<PagedResponse<ProductResponse>> getProducts(
-            @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size,
-            @RequestParam(required = false) String category,
-            @RequestParam(required = false) String search) {
+        @RequestParam(defaultValue = "0") int page,
+        @RequestParam(defaultValue = "20") int size,
+        @RequestParam(required = false) String category,
+        @RequestParam(required = false) String search,
+        @RequestParam(defaultValue = "createdAt") String sortBy,
+        @RequestParam(defaultValue = "desc") String sortDir) {
         
         ProductSearchCriteria criteria = ProductSearchCriteria.builder()
-            .page(page)
-            .size(size)
             .category(category)
             .searchTerm(search)
+            .page(page)
+            .size(size)
+            .sortBy(sortBy)
+            .sortDirection(sortDir)
             .build();
             
-        PagedResponse<ProductResponse> products = productService.searchProducts(criteria);
-        return ResponseEntity.ok(products);
-    }
-    
-    @GetMapping("/{productId}")
-    public ResponseEntity<ProductDetailResponse> getProductDetails(@PathVariable UUID productId) {
-        ProductDetailResponse product = productService.getProductDetails(productId);
-        return ResponseEntity.ok(product);
+        PagedResponse<ProductResponse> response = productService.searchProducts(criteria);
+        return ResponseEntity.ok(response);
     }
     
     @PostMapping
     @PreAuthorize("hasRole('SELLER') or hasRole('ADMIN')")
-    public ResponseEntity<ProductResponse> createProduct(@Valid @RequestBody CreateProductRequest request) {
-        ProductResponse product = productService.createProduct(request);
-        return ResponseEntity.status(HttpStatus.CREATED).body(product);
+    public ResponseEntity<ProductResponse> createProduct(
+        @Valid @RequestBody ProductCreateRequest request) {
+        ProductResponse response = productService.createProduct(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+    
+    @GetMapping("/{productId}")
+    public ResponseEntity<ProductDetailResponse> getProduct(
+        @PathVariable UUID productId) {
+        ProductDetailResponse response = productService.getProductDetail(productId);
+        return ResponseEntity.ok(response);
     }
 }
+```
 
+#### Class: ProductService
+```java
 @Service
 @Transactional
 public class ProductService {
@@ -225,42 +254,40 @@ public class ProductService {
         BoolQueryBuilder queryBuilder = QueryBuilders.boolQuery();
         
         if (StringUtils.hasText(criteria.getSearchTerm())) {
-            queryBuilder.must(QueryBuilders.multiMatchQuery(criteria.getSearchTerm())
-                .field("name", 2.0f)
-                .field("description", 1.0f)
-                .field("category", 1.5f));
+            queryBuilder.must(QueryBuilders.multiMatchQuery(
+                criteria.getSearchTerm(), "name", "description", "category"));
         }
         
         if (StringUtils.hasText(criteria.getCategory())) {
-            queryBuilder.filter(QueryBuilders.termQuery("category.keyword", criteria.getCategory()));
+            queryBuilder.filter(QueryBuilders.termQuery("category", criteria.getCategory()));
         }
         
         queryBuilder.filter(QueryBuilders.termQuery("isActive", true));
         
-        SearchRequest searchRequest = new SearchRequest("products")
-            .source(new SearchSourceBuilder()
-                .query(queryBuilder)
-                .from(criteria.getPage() * criteria.getSize())
-                .size(criteria.getSize())
-                .sort("createdAt", SortOrder.DESC));
-                
-        SearchResponse response = elasticsearchTemplate.search(searchRequest, RequestOptions.DEFAULT);
+        NativeSearchQuery searchQuery = new NativeSearchQueryBuilder()
+            .withQuery(queryBuilder)
+            .withPageable(PageRequest.of(criteria.getPage(), criteria.getSize()))
+            .withSort(SortBuilders.fieldSort(criteria.getSortBy())
+                .order(SortOrder.fromString(criteria.getSortDirection())))
+            .build();
+            
+        SearchHits<ProductDocument> searchHits = elasticsearchTemplate.search(searchQuery, ProductDocument.class);
         
-        List<ProductResponse> products = Arrays.stream(response.getHits().getHits())
-            .map(hit -> convertToProductResponse(hit.getSourceAsMap()))
+        List<ProductResponse> products = searchHits.getSearchHits().stream()
+            .map(hit -> ProductMapper.toResponse(hit.getContent()))
             .collect(Collectors.toList());
             
         return PagedResponse.<ProductResponse>builder()
             .content(products)
             .page(criteria.getPage())
             .size(criteria.getSize())
-            .totalElements(response.getHits().getTotalHits().value)
-            .totalPages((int) Math.ceil((double) response.getHits().getTotalHits().value / criteria.getSize()))
+            .totalElements(searchHits.getTotalHits())
+            .totalPages((int) Math.ceil((double) searchHits.getTotalHits() / criteria.getSize()))
             .build();
     }
     
-    public ProductResponse createProduct(CreateProductRequest request) {
-        validateProductRequest(request);
+    public ProductResponse createProduct(ProductCreateRequest request) {
+        validateProductCreation(request);
         
         List<String> imageUrls = imageUploadService.uploadImages(request.getImages());
         
@@ -274,7 +301,6 @@ public class ProductService {
             .sellerId(request.getSellerId())
             .isActive(true)
             .createdAt(LocalDateTime.now())
-            .updatedAt(LocalDateTime.now())
             .build();
             
         Product savedProduct = productRepository.save(product);
@@ -285,46 +311,54 @@ public class ProductService {
         // Index in Elasticsearch
         indexProductInElasticsearch(savedProduct);
         
-        return ProductResponse.from(savedProduct);
+        return ProductMapper.toResponse(savedProduct);
     }
 }
 ```
 
-### 3. Order Service Component
+### 1.3 Order Service Component
 
-#### Class Structure
+#### Class: OrderController
 ```java
 @RestController
 @RequestMapping("/api/v1/orders")
+@Validated
 public class OrderController {
     
     @Autowired
     private OrderService orderService;
     
     @PostMapping
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
-    public ResponseEntity<OrderResponse> createOrder(@Valid @RequestBody CreateOrderRequest request) {
-        OrderResponse order = orderService.createOrder(request);
-        return ResponseEntity.status(HttpStatus.CREATED).body(order);
+    @PreAuthorize("hasRole('CONSUMER')")
+    public ResponseEntity<OrderResponse> createOrder(
+        @Valid @RequestBody OrderCreateRequest request,
+        Authentication authentication) {
+        UUID userId = ((UserPrincipal) authentication.getPrincipal()).getUserId();
+        OrderResponse response = orderService.createOrder(userId, request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
     
     @GetMapping("/{orderId}")
-    @PreAuthorize("hasRole('USER') or hasRole('ADMIN')")
-    public ResponseEntity<OrderDetailResponse> getOrderDetails(@PathVariable UUID orderId) {
-        OrderDetailResponse order = orderService.getOrderDetails(orderId);
-        return ResponseEntity.ok(order);
+    @PreAuthorize("@orderService.isOrderOwner(#orderId, authentication.principal.userId) or hasRole('ADMIN')")
+    public ResponseEntity<OrderDetailResponse> getOrder(
+        @PathVariable UUID orderId) {
+        OrderDetailResponse response = orderService.getOrderDetail(orderId);
+        return ResponseEntity.ok(response);
     }
     
-    @PutMapping("/{orderId}/status")
-    @PreAuthorize("hasRole('SELLER') or hasRole('ADMIN')")
-    public ResponseEntity<OrderResponse> updateOrderStatus(
-            @PathVariable UUID orderId,
-            @Valid @RequestBody UpdateOrderStatusRequest request) {
-        OrderResponse order = orderService.updateOrderStatus(orderId, request.getStatus());
-        return ResponseEntity.ok(order);
+    @PutMapping("/{orderId}/cancel")
+    @PreAuthorize("@orderService.isOrderOwner(#orderId, authentication.principal.userId)")
+    public ResponseEntity<OrderResponse> cancelOrder(
+        @PathVariable UUID orderId,
+        @Valid @RequestBody OrderCancelRequest request) {
+        OrderResponse response = orderService.cancelOrder(orderId, request);
+        return ResponseEntity.ok(response);
     }
 }
+```
 
+#### Class: OrderService
+```java
 @Service
 @Transactional
 public class OrderService {
@@ -333,406 +367,280 @@ public class OrderService {
     private OrderRepository orderRepository;
     
     @Autowired
-    private ProductService productService;
-    
-    @Autowired
-    private InventoryService inventoryService;
+    private CartService cartService;
     
     @Autowired
     private PaymentService paymentService;
     
     @Autowired
+    private InventoryService inventoryService;
+    
+    @Autowired
     private NotificationService notificationService;
     
-    public OrderResponse createOrder(CreateOrderRequest request) {
-        validateOrderRequest(request);
-        
-        // Check inventory availability
-        for (OrderItemRequest item : request.getItems()) {
-            if (!inventoryService.isStockAvailable(item.getProductId(), item.getQuantity())) {
-                throw new InsufficientStockException("Insufficient stock for product: " + item.getProductId());
-            }
+    public OrderResponse createOrder(UUID userId, OrderCreateRequest request) {
+        // Validate cart items
+        List<CartItem> cartItems = cartService.getCartItems(userId);
+        if (cartItems.isEmpty()) {
+            throw new EmptyCartException("Cart is empty");
         }
         
-        // Calculate total amount
-        BigDecimal totalAmount = calculateTotalAmount(request.getItems());
+        // Check inventory availability
+        validateInventoryAvailability(cartItems);
         
+        // Calculate total amount
+        BigDecimal totalAmount = calculateTotalAmount(cartItems);
+        
+        // Create order
         Order order = Order.builder()
             .orderId(UUID.randomUUID())
-            .userId(request.getUserId())
+            .userId(userId)
             .orderDate(LocalDate.now())
             .totalAmount(totalAmount)
             .status(OrderStatus.PENDING)
             .shippingAddress(request.getShippingAddress())
             .paymentMethod(request.getPaymentMethod())
             .createdAt(LocalDateTime.now())
-            .updatedAt(LocalDateTime.now())
             .build();
             
         Order savedOrder = orderRepository.save(order);
         
         // Create order items
-        List<OrderItem> orderItems = createOrderItems(savedOrder.getOrderId(), request.getItems());
-        savedOrder.setOrderItems(orderItems);
+        List<OrderItem> orderItems = createOrderItems(savedOrder.getOrderId(), cartItems);
         
         // Reserve inventory
-        reserveInventory(request.getItems());
+        reserveInventory(orderItems);
         
         // Process payment
-        PaymentRequest paymentRequest = PaymentRequest.builder()
-            .orderId(savedOrder.getOrderId())
-            .amount(totalAmount)
-            .paymentMethod(request.getPaymentMethod())
-            .build();
-            
-        PaymentResponse paymentResponse = paymentService.processPayment(paymentRequest);
-        
-        if (paymentResponse.getStatus() == PaymentStatus.COMPLETED) {
+        PaymentResult paymentResult = paymentService.processPayment(
+            PaymentRequest.builder()
+                .orderId(savedOrder.getOrderId())
+                .amount(totalAmount)
+                .paymentMethod(request.getPaymentMethod())
+                .paymentDetails(request.getPaymentDetails())
+                .build());
+                
+        if (paymentResult.isSuccessful()) {
             savedOrder.setStatus(OrderStatus.CONFIRMED);
+            savedOrder.setTrackingNumber(generateTrackingNumber());
             orderRepository.save(savedOrder);
+            
+            // Clear cart
+            cartService.clearCart(userId);
             
             // Send confirmation notification
             notificationService.sendOrderConfirmation(savedOrder);
+        } else {
+            // Release reserved inventory
+            releaseInventory(orderItems);
+            throw new PaymentProcessingException("Payment failed: " + paymentResult.getErrorMessage());
         }
         
-        return OrderResponse.from(savedOrder);
+        return OrderMapper.toResponse(savedOrder);
     }
     
-    @Async
-    public void updateOrderStatus(UUID orderId, OrderStatus newStatus) {
+    public OrderResponse cancelOrder(UUID orderId, OrderCancelRequest request) {
         Order order = orderRepository.findById(orderId)
-            .orElseThrow(() -> new OrderNotFoundException("Order not found: " + orderId));
+            .orElseThrow(() -> new OrderNotFoundException("Order not found"));
             
-        OrderStatus previousStatus = order.getStatus();
-        order.setStatus(newStatus);
+        if (!canCancelOrder(order)) {
+            throw new OrderCancellationException("Order cannot be cancelled in current status");
+        }
+        
+        order.setStatus(OrderStatus.CANCELLED);
         order.setUpdatedAt(LocalDateTime.now());
         
-        if (newStatus == OrderStatus.SHIPPED) {
-            order.setTrackingNumber(generateTrackingNumber());
-        }
+        Order savedOrder = orderRepository.save(order);
         
-        orderRepository.save(order);
+        // Process refund
+        paymentService.processRefund(order.getOrderId(), order.getTotalAmount());
         
-        // Send status update notification
-        notificationService.sendOrderStatusUpdate(order, previousStatus, newStatus);
+        // Release inventory
+        List<OrderItem> orderItems = getOrderItems(orderId);
+        releaseInventory(orderItems);
+        
+        // Send cancellation notification
+        notificationService.sendOrderCancellation(savedOrder, request.getReason());
+        
+        return OrderMapper.toResponse(savedOrder);
     }
 }
 ```
 
-## Data Flow Diagrams
+## 2. Data Flow Diagrams
 
-### User Registration Flow
+### 2.1 User Registration Flow
 ```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   Client    │    │ API Gateway │    │User Service │    │  Database   │    │Email Service│
-└──────┬──────┘    └──────┬──────┘    └──────┬──────┘    └──────┬──────┘    └──────┬──────┘
-       │                  │                  │                  │                  │
-       │ POST /register   │                  │                  │                  │
-       ├─────────────────►│                  │                  │                  │
-       │                  │ Validate Request │                  │                  │
-       │                  ├─────────────────►│                  │                  │
-       │                  │                  │ Hash Password    │                  │
-       │                  │                  │ Generate UUID    │                  │
-       │                  │                  ├─────────────────►│                  │
-       │                  │                  │                  │ Save User        │
-       │                  │                  │                  │                  │
-       │                  │                  │ User Created     │                  │
-       │                  │                  │◄─────────────────┤                  │
-       │                  │                  │                  │                  │
-       │                  │                  │ Send Welcome Email                  │
-       │                  │                  ├────────────────────────────────────►│
-       │                  │ User Response    │                  │                  │
-       │                  │◄─────────────────┤                  │                  │
-       │ 201 Created      │                  │                  │                  │
-       │◄─────────────────┤                  │                  │                  │
-```
-
-### Product Search Flow
-```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   Client    │    │ API Gateway │    │Product Svc  │    │Elasticsearch│    │Redis Cache  │
-└──────┬──────┘    └──────┬──────┘    └──────┬──────┘    └──────┬──────┘    └──────┬──────┘
-       │                  │                  │                  │                  │
-       │ GET /products    │                  │                  │                  │
-       ├─────────────────►│                  │                  │                  │
-       │                  │ Search Request   │                  │                  │
-       │                  ├─────────────────►│                  │                  │
-       │                  │                  │ Check Cache      │                  │
-       │                  │                  ├────────────────────────────────────►│
-       │                  │                  │                  │                  │
-       │                  │                  │ Cache Miss       │                  │
-       │                  │                  │◄────────────────────────────────────┤
-       │                  │                  │                  │                  │
-       │                  │                  │ Search Query     │                  │
-       │                  │                  ├─────────────────►│                  │
-       │                  │                  │                  │                  │
-       │                  │                  │ Search Results   │                  │
-       │                  │                  │◄─────────────────┤                  │
-       │                  │                  │                  │                  │
-       │                  │                  │ Cache Results    │                  │
-       │                  │                  ├────────────────────────────────────►│
-       │                  │ Product List     │                  │                  │
-       │                  │◄─────────────────┤                  │                  │
-       │ 200 OK           │                  │                  │                  │
-       │◄─────────────────┤                  │                  │                  │
-```
-
-### Order Processing Flow
-```
-┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐
-│ Client  │  │Order Svc│  │Payment  │  │Inventory│  │Database │  │Notify   │
-│         │  │         │  │Service  │  │Service  │  │         │  │Service  │
-└────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘
-     │            │            │            │            │            │
-     │POST /order │            │            │            │            │
-     ├───────────►│            │            │            │            │
-     │            │Check Stock │            │            │            │
-     │            ├───────────────────────►│            │            │
-     │            │            │            │Stock OK    │            │
-     │            │◄───────────────────────┤            │            │
-     │            │            │            │            │            │
-     │            │Reserve Stock           │            │            │
-     │            ├───────────────────────►│            │            │
-     │            │            │            │            │            │
-     │            │Save Order  │            │            │            │
-     │            ├──────────────────────────────────────►│            │
-     │            │            │            │            │            │
-     │            │Process Payment         │            │            │
-     │            ├───────────►│            │            │            │
-     │            │            │Payment OK  │            │            │
-     │            │◄───────────┤            │            │            │
-     │            │            │            │            │            │
-     │            │Update Status           │            │            │
-     │            ├──────────────────────────────────────►│            │
-     │            │            │            │            │            │
-     │            │Send Notification                   │            │
-     │            ├─────────────────────────────────────────────────►│
-     │Order Created            │            │            │            │
-     │◄───────────┤            │            │            │            │
-```
-
-## Sequence Diagrams
-
-### Payment Processing Sequence
-```
-participant Client
-participant OrderService
-participant PaymentService
-participant PaymentGateway
-participant FraudDetection
-participant Database
-participant NotificationService
-
-Client->>OrderService: Create Order Request
-OrderService->>PaymentService: Process Payment Request
-PaymentService->>FraudDetection: Validate Transaction
-FraudDetection-->>PaymentService: Validation Result
-
-alt Fraud Check Passed
-    PaymentService->>PaymentGateway: Charge Payment
-    PaymentGateway-->>PaymentService: Payment Response
+sequenceDiagram
+    participant U as User
+    participant AG as API Gateway
+    participant US as User Service
+    participant DB as Database
+    participant NS as Notification Service
+    participant ES as Email Service
     
-    alt Payment Successful
-        PaymentService->>Database: Save Payment Record
-        PaymentService-->>OrderService: Payment Confirmed
-        OrderService->>Database: Update Order Status
-        OrderService->>NotificationService: Send Confirmation
-        OrderService-->>Client: Order Confirmed
-    else Payment Failed
-        PaymentService->>Database: Log Failed Payment
-        PaymentService-->>OrderService: Payment Failed
-        OrderService-->>Client: Payment Error
+    U->>AG: POST /api/v1/users/register
+    AG->>AG: Rate limiting & validation
+    AG->>US: Forward request
+    US->>US: Validate input data
+    US->>DB: Check email uniqueness
+    DB-->>US: Email available
+    US->>US: Hash password
+    US->>DB: Save user
+    DB-->>US: User created
+    US->>NS: Send welcome notification
+    NS->>ES: Send welcome email
+    ES-->>NS: Email sent
+    NS-->>US: Notification sent
+    US-->>AG: User response
+    AG-->>U: 201 Created
+```
+
+### 2.2 Product Search Flow
+```
+sequenceDiagram
+    participant U as User
+    participant AG as API Gateway
+    participant PS as Product Service
+    participant ES as Elasticsearch
+    participant C as Cache
+    participant DB as Database
+    
+    U->>AG: GET /api/v1/products?search=laptop
+    AG->>PS: Forward request
+    PS->>C: Check cache
+    C-->>PS: Cache miss
+    PS->>ES: Search query
+    ES-->>PS: Search results
+    PS->>DB: Get additional product details
+    DB-->>PS: Product details
+    PS->>C: Cache results
+    PS-->>AG: Product list
+    AG-->>U: 200 OK with products
+```
+
+### 2.3 Order Processing Flow
+```
+sequenceDiagram
+    participant U as User
+    participant AG as API Gateway
+    participant OS as Order Service
+    participant CS as Cart Service
+    participant IS as Inventory Service
+    participant PS as Payment Service
+    participant PG as Payment Gateway
+    participant NS as Notification Service
+    participant DB as Database
+    
+    U->>AG: POST /api/v1/orders
+    AG->>OS: Create order request
+    OS->>CS: Get cart items
+    CS-->>OS: Cart items
+    OS->>IS: Check inventory
+    IS-->>OS: Inventory available
+    OS->>DB: Create order
+    DB-->>OS: Order created
+    OS->>IS: Reserve inventory
+    IS-->>OS: Inventory reserved
+    OS->>PS: Process payment
+    PS->>PG: Payment request
+    PG-->>PS: Payment successful
+    PS-->>OS: Payment confirmed
+    OS->>DB: Update order status
+    OS->>CS: Clear cart
+    OS->>NS: Send confirmation
+    NS-->>OS: Notification sent
+    OS-->>AG: Order response
+    AG-->>U: 201 Created
+```
+
+## 3. Sequence Diagrams
+
+### 3.1 Authentication Sequence
+```
+sequenceDiagram
+    participant C as Client
+    participant AG as API Gateway
+    participant AS as Auth Service
+    participant JWT as JWT Provider
+    participant DB as User Database
+    participant R as Redis Cache
+    
+    C->>AG: POST /auth/login {email, password}
+    AG->>AS: Authenticate user
+    AS->>DB: Find user by email
+    DB-->>AS: User data
+    AS->>AS: Verify password
+    AS->>JWT: Generate tokens
+    JWT-->>AS: Access & refresh tokens
+    AS->>R: Store refresh token
+    AS-->>AG: Auth response
+    AG-->>C: 200 OK {tokens}
+    
+    Note over C,R: Subsequent API calls
+    C->>AG: GET /api/resource (with token)
+    AG->>AG: Validate JWT token
+    AG->>AS: Verify token signature
+    AS-->>AG: Token valid
+    AG->>AG: Extract user context
+    AG-->>C: Resource data
+```
+
+### 3.2 Payment Processing Sequence
+```
+sequenceDiagram
+    participant OS as Order Service
+    participant PS as Payment Service
+    participant FD as Fraud Detection
+    participant PG as Payment Gateway
+    participant V as Vault Service
+    participant DB as Payment DB
+    participant NS as Notification Service
+    
+    OS->>PS: Process payment request
+    PS->>FD: Fraud check
+    FD-->>PS: Risk assessment
+    alt Low Risk
+        PS->>V: Tokenize payment data
+        V-->>PS: Payment token
+        PS->>PG: Process payment
+        PG-->>PS: Payment result
+        PS->>DB: Store transaction
+        PS->>NS: Send receipt
+        PS-->>OS: Payment successful
+    else High Risk
+        PS->>NS: Send fraud alert
+        PS-->>OS: Payment declined
     end
-else Fraud Detected
-    PaymentService->>Database: Log Suspicious Activity
-    PaymentService-->>OrderService: Transaction Blocked
-    OrderService-->>Client: Transaction Declined
-end
 ```
 
-## Implementation Details
+## 4. Implementation Details
 
-### Configuration Classes
+### 4.1 Database Schema
 
-#### Security Configuration
-```java
-@Configuration
-@EnableWebSecurity
-@EnableGlobalMethodSecurity(prePostEnabled = true)
-public class SecurityConfig {
-    
-    @Autowired
-    private JwtAuthenticationEntryPoint jwtAuthenticationEntryPoint;
-    
-    @Autowired
-    private JwtAuthenticationFilter jwtAuthenticationFilter;
-    
-    @Bean
-    public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder(12);
-    }
-    
-    @Bean
-    public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
-        return config.getAuthenticationManager();
-    }
-    
-    @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
-        http.cors().and().csrf().disable()
-            .exceptionHandling().authenticationEntryPoint(jwtAuthenticationEntryPoint)
-            .and()
-            .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
-            .and()
-            .authorizeHttpRequests(authz -> authz
-                .requestMatchers("/api/v1/auth/**").permitAll()
-                .requestMatchers("/api/v1/products/**").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/v1/reviews/**").permitAll()
-                .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
-                .requestMatchers(HttpMethod.POST, "/api/v1/products/**").hasAnyRole("SELLER", "ADMIN")
-                .anyRequest().authenticated()
-            );
-            
-        http.addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
-        
-        return http.build();
-    }
-}
-```
-
-#### Database Configuration
-```java
-@Configuration
-@EnableJpaRepositories(basePackages = "com.ecommerce.repository")
-@EnableTransactionManagement
-public class DatabaseConfig {
-    
-    @Bean
-    @Primary
-    @ConfigurationProperties("spring.datasource.primary")
-    public DataSource primaryDataSource() {
-        return DataSourceBuilder.create().build();
-    }
-    
-    @Bean
-    @ConfigurationProperties("spring.datasource.readonly")
-    public DataSource readOnlyDataSource() {
-        return DataSourceBuilder.create().build();
-    }
-    
-    @Bean
-    public DataSource routingDataSource() {
-        RoutingDataSource routingDataSource = new RoutingDataSource();
-        
-        Map<Object, Object> dataSourceMap = new HashMap<>();
-        dataSourceMap.put("primary", primaryDataSource());
-        dataSourceMap.put("readonly", readOnlyDataSource());
-        
-        routingDataSource.setTargetDataSources(dataSourceMap);
-        routingDataSource.setDefaultTargetDataSource(primaryDataSource());
-        
-        return routingDataSource;
-    }
-    
-    @Bean
-    public JpaTransactionManager transactionManager() {
-        JpaTransactionManager transactionManager = new JpaTransactionManager();
-        transactionManager.setDataSource(routingDataSource());
-        return transactionManager;
-    }
-}
-```
-
-#### Redis Configuration
-```java
-@Configuration
-@EnableCaching
-public class RedisConfig {
-    
-    @Bean
-    public LettuceConnectionFactory redisConnectionFactory() {
-        RedisStandaloneConfiguration config = new RedisStandaloneConfiguration();
-        config.setHostName("localhost");
-        config.setPort(6379);
-        config.setDatabase(0);
-        
-        LettuceClientConfiguration clientConfig = LettuceClientConfiguration.builder()
-            .commandTimeout(Duration.ofSeconds(2))
-            .shutdownTimeout(Duration.ZERO)
-            .build();
-            
-        return new LettuceConnectionFactory(config, clientConfig);
-    }
-    
-    @Bean
-    public RedisTemplate<String, Object> redisTemplate() {
-        RedisTemplate<String, Object> template = new RedisTemplate<>();
-        template.setConnectionFactory(redisConnectionFactory());
-        
-        Jackson2JsonRedisSerializer<Object> serializer = new Jackson2JsonRedisSerializer<>(Object.class);
-        ObjectMapper objectMapper = new ObjectMapper();
-        objectMapper.setVisibility(PropertyAccessor.ALL, JsonAutoDetect.Visibility.ANY);
-        objectMapper.activateDefaultTyping(LaissezFaireSubTypeValidator.instance, ObjectMapper.DefaultTyping.NON_FINAL);
-        serializer.setObjectMapper(objectMapper);
-        
-        template.setKeySerializer(new StringRedisSerializer());
-        template.setValueSerializer(serializer);
-        template.setHashKeySerializer(new StringRedisSerializer());
-        template.setHashValueSerializer(serializer);
-        
-        template.afterPropertiesSet();
-        return template;
-    }
-    
-    @Bean
-    public CacheManager cacheManager() {
-        RedisCacheManager.Builder builder = RedisCacheManager
-            .RedisCacheManagerBuilder
-            .fromConnectionFactory(redisConnectionFactory())
-            .cacheDefaults(cacheConfiguration());
-            
-        return builder.build();
-    }
-    
-    private RedisCacheConfiguration cacheConfiguration() {
-        return RedisCacheConfiguration.defaultCacheConfig()
-            .entryTtl(Duration.ofMinutes(30))
-            .serializeKeysWith(RedisSerializationContext.SerializationPair.fromSerializer(new StringRedisSerializer()))
-            .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(new GenericJackson2JsonRedisSerializer()));
-    }
-}
-```
-
-## Database Schema
-
-### SQL DDL Statements
-
+#### Users Table
 ```sql
--- Users table
 CREATE TABLE users (
     user_id UUID PRIMARY KEY,
     email VARCHAR(255) UNIQUE NOT NULL,
     password VARCHAR(255) NOT NULL,
-    first_name VARCHAR(100) NOT NULL,
-    last_name VARCHAR(100) NOT NULL,
+    first_name VARCHAR(50) NOT NULL,
+    last_name VARCHAR(50) NOT NULL,
     phone VARCHAR(20),
     address TEXT,
     role VARCHAR(20) NOT NULL CHECK (role IN ('CONSUMER', 'SELLER', 'ADMIN')),
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    is_active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP
 );
 
--- User profiles table
-CREATE TABLE user_profiles (
-    profile_id UUID PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-    avatar VARCHAR(500),
-    preferences JSONB,
-    wishlist JSONB
-);
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_role ON users(role);
+CREATE INDEX idx_users_created_at ON users(created_at);
+```
 
--- Products table
+#### Products Table
+```sql
 CREATE TABLE products (
     product_id UUID PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
@@ -740,416 +648,175 @@ CREATE TABLE products (
     price DECIMAL(10,2) NOT NULL,
     category VARCHAR(100) NOT NULL,
     image_urls JSONB,
-    seller_id UUID NOT NULL REFERENCES users(user_id),
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    seller_id UUID NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP,
+    FOREIGN KEY (seller_id) REFERENCES users(user_id)
 );
 
--- Inventory table
-CREATE TABLE inventory (
-    inventory_id UUID PRIMARY KEY,
-    product_id UUID NOT NULL REFERENCES products(product_id) ON DELETE CASCADE,
-    stock_level INTEGER NOT NULL DEFAULT 0,
-    reorder_level INTEGER NOT NULL DEFAULT 10,
-    last_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+CREATE INDEX idx_products_category ON products(category);
+CREATE INDEX idx_products_seller ON products(seller_id);
+CREATE INDEX idx_products_price ON products(price);
+CREATE INDEX idx_products_created_at ON products(created_at);
+CREATE INDEX idx_products_name_gin ON products USING gin(to_tsvector('english', name));
+```
 
--- Orders table
+#### Orders Table
+```sql
 CREATE TABLE orders (
     order_id UUID PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES users(user_id),
+    user_id UUID NOT NULL,
     order_date DATE NOT NULL,
     total_amount DECIMAL(10,2) NOT NULL,
     status VARCHAR(20) NOT NULL CHECK (status IN ('PENDING', 'CONFIRMED', 'SHIPPED', 'DELIVERED', 'CANCELLED')),
     shipping_address TEXT NOT NULL,
-    payment_method VARCHAR(20) NOT NULL,
+    payment_method VARCHAR(50) NOT NULL,
     tracking_number VARCHAR(100),
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
 );
 
--- Order items table
-CREATE TABLE order_items (
-    order_item_id UUID PRIMARY KEY,
-    order_id UUID NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
-    product_id UUID NOT NULL REFERENCES products(product_id),
-    quantity INTEGER NOT NULL,
-    unit_price DECIMAL(10,2) NOT NULL,
-    subtotal DECIMAL(10,2) NOT NULL
-);
-
--- Cart items table
-CREATE TABLE cart_items (
-    cart_item_id UUID PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES users(user_id),
-    product_id UUID NOT NULL REFERENCES products(product_id),
-    quantity INTEGER NOT NULL,
-    added_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(user_id, product_id)
-);
-
--- Payments table
-CREATE TABLE payments (
-    payment_id UUID PRIMARY KEY,
-    order_id UUID NOT NULL REFERENCES orders(order_id),
-    amount DECIMAL(10,2) NOT NULL,
-    method VARCHAR(20) NOT NULL CHECK (method IN ('CREDIT_CARD', 'PAYPAL', 'BANK_TRANSFER')),
-    status VARCHAR(20) NOT NULL CHECK (status IN ('PENDING', 'COMPLETED', 'FAILED', 'REFUNDED')),
-    transaction_id VARCHAR(255),
-    processed_at TIMESTAMP
-);
-
--- Reviews table
-CREATE TABLE reviews (
-    review_id UUID PRIMARY KEY,
-    product_id UUID NOT NULL REFERENCES products(product_id),
-    user_id UUID NOT NULL REFERENCES users(user_id),
-    rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
-    comment TEXT,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(product_id, user_id)
-);
-
--- Notifications table
-CREATE TABLE notifications (
-    notification_id UUID PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES users(user_id),
-    type VARCHAR(30) NOT NULL CHECK (type IN ('ORDER_UPDATE', 'INVENTORY_ALERT', 'SYSTEM_NOTIFICATION')),
-    message TEXT NOT NULL,
-    is_read BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
--- Audit log table
-CREATE TABLE audit_logs (
-    log_id UUID PRIMARY KEY,
-    user_id UUID REFERENCES users(user_id),
-    action VARCHAR(100) NOT NULL,
-    entity_type VARCHAR(50) NOT NULL,
-    entity_id UUID NOT NULL,
-    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    ip_address INET,
-    user_agent TEXT
-);
-
--- Indexes for performance
-CREATE INDEX idx_users_email ON users(email);
-CREATE INDEX idx_products_category ON products(category);
-CREATE INDEX idx_products_seller ON products(seller_id);
 CREATE INDEX idx_orders_user ON orders(user_id);
 CREATE INDEX idx_orders_status ON orders(status);
-CREATE INDEX idx_order_items_order ON order_items(order_id);
-CREATE INDEX idx_cart_items_user ON cart_items(user_id);
-CREATE INDEX idx_payments_order ON payments(order_id);
-CREATE INDEX idx_reviews_product ON reviews(product_id);
-CREATE INDEX idx_notifications_user ON notifications(user_id);
-CREATE INDEX idx_audit_logs_user ON audit_logs(user_id);
-CREATE INDEX idx_audit_logs_timestamp ON audit_logs(timestamp);
+CREATE INDEX idx_orders_date ON orders(order_date);
+CREATE INDEX idx_orders_tracking ON orders(tracking_number);
 ```
 
-## API Specifications
+### 4.2 API Specifications
 
-### REST API Endpoints
-
-#### Authentication Endpoints
+#### User Registration API
 ```yaml
-/api/v1/auth:
-  post:
-    /register:
-      summary: Register new user
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                email:
-                  type: string
-                  format: email
-                password:
-                  type: string
-                  minLength: 8
-                firstName:
-                  type: string
-                lastName:
-                  type: string
-                phone:
-                  type: string
-                address:
-                  type: string
-      responses:
-        '201':
-          description: User created successfully
-        '400':
-          description: Invalid input data
-        '409':
-          description: Email already exists
-    
-    /login:
-      summary: Authenticate user
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                email:
-                  type: string
-                  format: email
-                password:
-                  type: string
-      responses:
-        '200':
-          description: Authentication successful
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  accessToken:
-                    type: string
-                  refreshToken:
-                    type: string
-                  tokenType:
-                    type: string
-                  expiresIn:
-                    type: integer
-        '401':
-          description: Invalid credentials
+POST /api/v1/users/register
+Content-Type: application/json
+
+Request Body:
+{
+  "email": "user@example.com",
+  "password": "SecurePass123!",
+  "firstName": "John",
+  "lastName": "Doe",
+  "phone": "+1234567890",
+  "address": "123 Main St, City, State 12345"
+}
+
+Response (201 Created):
+{
+  "userId": "123e4567-e89b-12d3-a456-426614174000",
+  "email": "user@example.com",
+  "firstName": "John",
+  "lastName": "Doe",
+  "role": "CONSUMER",
+  "isActive": true,
+  "createdAt": "2024-01-15T10:30:00Z"
+}
+
+Error Responses:
+400 Bad Request - Validation errors
+409 Conflict - Email already exists
+500 Internal Server Error - Server error
 ```
 
-#### Product Endpoints
+#### Product Search API
 ```yaml
-/api/v1/products:
-  get:
-    summary: Search products
-    parameters:
-      - name: page
-        in: query
-        schema:
-          type: integer
-          default: 0
-      - name: size
-        in: query
-        schema:
-          type: integer
-          default: 20
-      - name: category
-        in: query
-        schema:
-          type: string
-      - name: search
-        in: query
-        schema:
-          type: string
-    responses:
-      '200':
-        description: Products retrieved successfully
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                content:
-                  type: array
-                  items:
-                    $ref: '#/components/schemas/Product'
-                page:
-                  type: integer
-                size:
-                  type: integer
-                totalElements:
-                  type: integer
-                totalPages:
-                  type: integer
-  
-  post:
-    summary: Create new product
-    security:
-      - BearerAuth: []
-    requestBody:
-      required: true
-      content:
-        multipart/form-data:
-          schema:
-            type: object
-            properties:
-              name:
-                type: string
-              description:
-                type: string
-              price:
-                type: number
-                format: decimal
-              category:
-                type: string
-              images:
-                type: array
-                items:
-                  type: string
-                  format: binary
-              initialStock:
-                type: integer
-    responses:
-      '201':
-        description: Product created successfully
-      '400':
-        description: Invalid input data
-      '401':
-        description: Unauthorized
-      '403':
-        description: Insufficient permissions
+GET /api/v1/products?search=laptop&category=electronics&page=0&size=20
+
+Response (200 OK):
+{
+  "content": [
+    {
+      "productId": "456e7890-e89b-12d3-a456-426614174001",
+      "name": "Gaming Laptop",
+      "description": "High-performance gaming laptop",
+      "price": 1299.99,
+      "category": "electronics",
+      "imageUrls": ["https://cdn.example.com/laptop1.jpg"],
+      "sellerId": "789e0123-e89b-12d3-a456-426614174002",
+      "averageRating": 4.5,
+      "reviewCount": 128
+    }
+  ],
+  "page": 0,
+  "size": 20,
+  "totalElements": 1,
+  "totalPages": 1
+}
 ```
 
-## Security Implementation
+### 4.3 Security Implementation
 
-### JWT Token Provider
+#### JWT Token Configuration
 ```java
-@Component
-public class JwtTokenProvider {
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
     
-    private static final Logger logger = LoggerFactory.getLogger(JwtTokenProvider.class);
-    
-    @Value("${app.jwtSecret}")
-    private String jwtSecret;
-    
-    @Value("${app.jwtExpirationInMs}")
-    private int jwtExpirationInMs;
-    
-    @Value("${app.jwtRefreshExpirationInMs}")
-    private int jwtRefreshExpirationInMs;
-    
-    private Key getSigningKey() {
-        byte[] keyBytes = Decoders.BASE64.decode(jwtSecret);
-        return Keys.hmacShaKeyFor(keyBytes);
+    @Bean
+    public JwtTokenProvider jwtTokenProvider() {
+        return JwtTokenProvider.builder()
+            .secretKey(getSecretKey())
+            .accessTokenExpiration(Duration.ofMinutes(15))
+            .refreshTokenExpiration(Duration.ofDays(7))
+            .algorithm(Algorithm.RS256)
+            .build();
     }
     
-    public String generateAccessToken(User user) {
-        Date expiryDate = new Date(System.currentTimeMillis() + jwtExpirationInMs);
-        
-        return Jwts.builder()
-            .setSubject(user.getUserId().toString())
-            .setIssuedAt(new Date())
-            .setExpiration(expiryDate)
-            .claim("email", user.getEmail())
-            .claim("role", user.getRole().name())
-            .claim("tokenType", "ACCESS")
-            .signWith(getSigningKey(), SignatureAlgorithm.HS512)
-            .compact();
-    }
-    
-    public String generateRefreshToken(User user) {
-        Date expiryDate = new Date(System.currentTimeMillis() + jwtRefreshExpirationInMs);
-        
-        return Jwts.builder()
-            .setSubject(user.getUserId().toString())
-            .setIssuedAt(new Date())
-            .setExpiration(expiryDate)
-            .claim("tokenType", "REFRESH")
-            .signWith(getSigningKey(), SignatureAlgorithm.HS512)
-            .compact();
-    }
-    
-    public UUID getUserIdFromToken(String token) {
-        Claims claims = Jwts.parserBuilder()
-            .setSigningKey(getSigningKey())
-            .build()
-            .parseClaimsJws(token)
-            .getBody();
-            
-        return UUID.fromString(claims.getSubject());
-    }
-    
-    public boolean validateToken(String authToken) {
-        try {
-            Jwts.parserBuilder()
-                .setSigningKey(getSigningKey())
-                .build()
-                .parseClaimsJws(authToken);
-            return true;
-        } catch (SecurityException ex) {
-            logger.error("Invalid JWT signature");
-        } catch (MalformedJwtException ex) {
-            logger.error("Invalid JWT token");
-        } catch (ExpiredJwtException ex) {
-            logger.error("Expired JWT token");
-        } catch (UnsupportedJwtException ex) {
-            logger.error("Unsupported JWT token");
-        } catch (IllegalArgumentException ex) {
-            logger.error("JWT claims string is empty");
-        }
-        return false;
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        return http
+            .csrf().disable()
+            .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/api/v1/auth/**").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/v1/products/**").permitAll()
+                .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
+                .anyRequest().authenticated()
+            )
+            .oauth2ResourceServer().jwt()
+            .and()
+            .addFilterBefore(new JwtAuthenticationFilter(jwtTokenProvider()), 
+                UsernamePasswordAuthenticationFilter.class)
+            .build();
     }
 }
 ```
 
-### Input Validation
+#### Input Validation
 ```java
 @Component
 public class InputValidator {
     
     private static final Pattern EMAIL_PATTERN = 
-        Pattern.compile("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$");
+        Pattern.compile("^[A-Za-z0-9+_.-]+@([A-Za-z0-9.-]+\\.[A-Za-z]{2,})$");
     
-    private static final Pattern PHONE_PATTERN = 
-        Pattern.compile("^\\+?[1-9]\\d{1,14}$");
+    private static final Pattern PASSWORD_PATTERN = 
+        Pattern.compile("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[@$!%*?&])[A-Za-z\\d@$!%*?&]{8,}$");
     
-    public void validateUserRegistration(UserRegistrationRequest request) {
-        List<String> errors = new ArrayList<>();
-        
-        if (!EMAIL_PATTERN.matcher(request.getEmail()).matches()) {
-            errors.add("Invalid email format");
-        }
-        
-        if (request.getPassword().length() < 8) {
-            errors.add("Password must be at least 8 characters long");
-        }
-        
-        if (!isPasswordStrong(request.getPassword())) {
-            errors.add("Password must contain uppercase, lowercase, number, and special character");
-        }
-        
-        if (request.getPhone() != null && !PHONE_PATTERN.matcher(request.getPhone()).matches()) {
-            errors.add("Invalid phone number format");
-        }
-        
-        if (StringUtils.isBlank(request.getFirstName()) || request.getFirstName().length() > 100) {
-            errors.add("First name is required and must be less than 100 characters");
-        }
-        
-        if (StringUtils.isBlank(request.getLastName()) || request.getLastName().length() > 100) {
-            errors.add("Last name is required and must be less than 100 characters");
-        }
-        
-        if (!errors.isEmpty()) {
-            throw new ValidationException("Validation failed: " + String.join(", ", errors));
+    public void validateEmail(String email) {
+        if (!EMAIL_PATTERN.matcher(email).matches()) {
+            throw new ValidationException("Invalid email format");
         }
     }
     
-    private boolean isPasswordStrong(String password) {
-        return password.matches("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[@$!%*?&])[A-Za-z\\d@$!%*?&]{8,}$");
+    public void validatePassword(String password) {
+        if (!PASSWORD_PATTERN.matcher(password).matches()) {
+            throw new ValidationException(
+                "Password must be at least 8 characters with uppercase, lowercase, digit, and special character");
+        }
     }
     
     public void sanitizeInput(String input) {
-        if (input == null) return;
-        
-        // Remove potential XSS payloads
-        String sanitized = input.replaceAll("<script[^>]*>.*?</script>", "")
-                               .replaceAll("<.*?>", "")
-                               .replaceAll("javascript:", "")
-                               .replaceAll("on\\w+\\s*=", "");
-        
-        // Additional sanitization can be added here
+        if (input.contains("<script>") || input.contains("javascript:")) {
+            throw new SecurityException("Potentially malicious input detected");
+        }
     }
 }
 ```
 
-## Error Handling
+### 4.4 Error Handling
 
-### Global Exception Handler
+#### Global Exception Handler
 ```java
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -1158,379 +825,302 @@ public class GlobalExceptionHandler {
     
     @ExceptionHandler(ValidationException.class)
     public ResponseEntity<ErrorResponse> handleValidationException(ValidationException ex) {
-        logger.warn("Validation error: {}", ex.getMessage());
-        
-        ErrorResponse errorResponse = ErrorResponse.builder()
-            .timestamp(LocalDateTime.now())
-            .status(HttpStatus.BAD_REQUEST.value())
-            .error("Validation Error")
+        ErrorResponse error = ErrorResponse.builder()
+            .code("VALIDATION_ERROR")
             .message(ex.getMessage())
-            .path(getCurrentPath())
+            .timestamp(Instant.now())
             .build();
-            
-        return ResponseEntity.badRequest().body(errorResponse);
+        return ResponseEntity.badRequest().body(error);
     }
     
     @ExceptionHandler(AuthenticationException.class)
     public ResponseEntity<ErrorResponse> handleAuthenticationException(AuthenticationException ex) {
-        logger.warn("Authentication error: {}", ex.getMessage());
-        
-        ErrorResponse errorResponse = ErrorResponse.builder()
-            .timestamp(LocalDateTime.now())
-            .status(HttpStatus.UNAUTHORIZED.value())
-            .error("Authentication Error")
+        ErrorResponse error = ErrorResponse.builder()
+            .code("AUTHENTICATION_FAILED")
             .message("Invalid credentials")
-            .path(getCurrentPath())
+            .timestamp(Instant.now())
             .build();
-            
-        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(errorResponse);
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
     }
     
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ErrorResponse> handleAccessDeniedException(AccessDeniedException ex) {
-        logger.warn("Access denied: {}", ex.getMessage());
-        
-        ErrorResponse errorResponse = ErrorResponse.builder()
-            .timestamp(LocalDateTime.now())
-            .status(HttpStatus.FORBIDDEN.value())
-            .error("Access Denied")
+        ErrorResponse error = ErrorResponse.builder()
+            .code("ACCESS_DENIED")
             .message("Insufficient permissions")
-            .path(getCurrentPath())
+            .timestamp(Instant.now())
             .build();
-            
-        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(errorResponse);
-    }
-    
-    @ExceptionHandler(ResourceNotFoundException.class)
-    public ResponseEntity<ErrorResponse> handleResourceNotFoundException(ResourceNotFoundException ex) {
-        logger.warn("Resource not found: {}", ex.getMessage());
-        
-        ErrorResponse errorResponse = ErrorResponse.builder()
-            .timestamp(LocalDateTime.now())
-            .status(HttpStatus.NOT_FOUND.value())
-            .error("Resource Not Found")
-            .message(ex.getMessage())
-            .path(getCurrentPath())
-            .build();
-            
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(errorResponse);
-    }
-    
-    @ExceptionHandler(InsufficientStockException.class)
-    public ResponseEntity<ErrorResponse> handleInsufficientStockException(InsufficientStockException ex) {
-        logger.warn("Insufficient stock: {}", ex.getMessage());
-        
-        ErrorResponse errorResponse = ErrorResponse.builder()
-            .timestamp(LocalDateTime.now())
-            .status(HttpStatus.CONFLICT.value())
-            .error("Insufficient Stock")
-            .message(ex.getMessage())
-            .path(getCurrentPath())
-            .build();
-            
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(errorResponse);
-    }
-    
-    @ExceptionHandler(PaymentProcessingException.class)
-    public ResponseEntity<ErrorResponse> handlePaymentProcessingException(PaymentProcessingException ex) {
-        logger.error("Payment processing error: {}", ex.getMessage(), ex);
-        
-        ErrorResponse errorResponse = ErrorResponse.builder()
-            .timestamp(LocalDateTime.now())
-            .status(HttpStatus.PAYMENT_REQUIRED.value())
-            .error("Payment Processing Error")
-            .message("Payment could not be processed")
-            .path(getCurrentPath())
-            .build();
-            
-        return ResponseEntity.status(HttpStatus.PAYMENT_REQUIRED).body(errorResponse);
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(error);
     }
     
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleGenericException(Exception ex) {
-        logger.error("Unexpected error: {}", ex.getMessage(), ex);
-        
-        ErrorResponse errorResponse = ErrorResponse.builder()
-            .timestamp(LocalDateTime.now())
-            .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
-            .error("Internal Server Error")
+        logger.error("Unexpected error occurred", ex);
+        ErrorResponse error = ErrorResponse.builder()
+            .code("INTERNAL_ERROR")
             .message("An unexpected error occurred")
-            .path(getCurrentPath())
+            .timestamp(Instant.now())
             .build();
-            
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
-    }
-    
-    private String getCurrentPath() {
-        RequestAttributes requestAttributes = RequestContextHolder.getRequestAttributes();
-        if (requestAttributes instanceof ServletRequestAttributes) {
-            HttpServletRequest request = ((ServletRequestAttributes) requestAttributes).getRequest();
-            return request.getRequestURI();
-        }
-        return "unknown";
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
     }
 }
 ```
 
-### Circuit Breaker Implementation
+### 4.5 Monitoring and Logging
+
+#### Application Metrics
 ```java
 @Component
-public class PaymentServiceCircuitBreaker {
+public class MetricsCollector {
     
-    private static final Logger logger = LoggerFactory.getLogger(PaymentServiceCircuitBreaker.class);
+    private final MeterRegistry meterRegistry;
+    private final Counter userRegistrationCounter;
+    private final Counter orderCreationCounter;
+    private final Timer paymentProcessingTimer;
     
-    @Autowired
-    private PaymentGatewayClient paymentGatewayClient;
-    
-    @CircuitBreaker(name = "payment-service", fallbackMethod = "fallbackPayment")
-    @Retry(name = "payment-service")
-    @TimeLimiter(name = "payment-service")
-    public CompletableFuture<PaymentResponse> processPayment(PaymentRequest request) {
-        logger.info("Processing payment for order: {}", request.getOrderId());
-        
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                return paymentGatewayClient.processPayment(request);
-            } catch (Exception ex) {
-                logger.error("Payment processing failed for order: {}", request.getOrderId(), ex);
-                throw new PaymentProcessingException("Payment processing failed", ex);
-            }
-        });
+    public MetricsCollector(MeterRegistry meterRegistry) {
+        this.meterRegistry = meterRegistry;
+        this.userRegistrationCounter = Counter.builder("user.registrations")
+            .description("Number of user registrations")
+            .register(meterRegistry);
+        this.orderCreationCounter = Counter.builder("order.creations")
+            .description("Number of orders created")
+            .register(meterRegistry);
+        this.paymentProcessingTimer = Timer.builder("payment.processing.time")
+            .description("Payment processing duration")
+            .register(meterRegistry);
     }
     
-    public CompletableFuture<PaymentResponse> fallbackPayment(PaymentRequest request, Exception ex) {
-        logger.warn("Using fallback payment method for order: {}", request.getOrderId());
-        
-        // Implement fallback logic (e.g., queue for later processing)
-        PaymentResponse fallbackResponse = PaymentResponse.builder()
-            .paymentId(UUID.randomUUID())
-            .orderId(request.getOrderId())
-            .status(PaymentStatus.PENDING)
-            .message("Payment queued for processing")
-            .build();
-            
-        return CompletableFuture.completedFuture(fallbackResponse);
+    public void incrementUserRegistration() {
+        userRegistrationCounter.increment();
+    }
+    
+    public void incrementOrderCreation() {
+        orderCreationCounter.increment();
+    }
+    
+    public Timer.Sample startPaymentTimer() {
+        return Timer.start(meterRegistry);
     }
 }
 ```
 
-## Testing Strategy
-
-### Unit Tests
+#### Audit Logging
 ```java
-@ExtendWith(MockitoExtension.class)
-class UserServiceTest {
+@Component
+public class AuditLogger {
     
-    @Mock
-    private UserRepository userRepository;
+    private static final Logger auditLog = LoggerFactory.getLogger("AUDIT");
     
-    @Mock
-    private PasswordEncoder passwordEncoder;
-    
-    @Mock
-    private JwtTokenProvider jwtTokenProvider;
-    
-    @Mock
-    private AuditService auditService;
-    
-    @InjectMocks
-    private UserService userService;
-    
-    @Test
-    void registerUser_ValidRequest_ShouldReturnUserResponse() {
-        // Given
-        UserRegistrationRequest request = UserRegistrationRequest.builder()
-            .email("test@example.com")
-            .password("StrongPass123!")
-            .firstName("John")
-            .lastName("Doe")
+    public void logUserAction(UUID userId, String action, String entityType, UUID entityId) {
+        AuditEvent event = AuditEvent.builder()
+            .userId(userId)
+            .action(action)
+            .entityType(entityType)
+            .entityId(entityId)
+            .timestamp(Instant.now())
+            .ipAddress(getCurrentUserIpAddress())
+            .userAgent(getCurrentUserAgent())
             .build();
             
-        User savedUser = User.builder()
-            .userId(UUID.randomUUID())
-            .email(request.getEmail())
-            .firstName(request.getFirstName())
-            .lastName(request.getLastName())
-            .role(UserRole.CONSUMER)
-            .isActive(true)
-            .build();
-            
-        when(passwordEncoder.encode(request.getPassword())).thenReturn("encodedPassword");
-        when(userRepository.save(any(User.class))).thenReturn(savedUser);
-        
-        // When
-        UserResponse response = userService.registerUser(request);
-        
-        // Then
-        assertThat(response).isNotNull();
-        assertThat(response.getEmail()).isEqualTo(request.getEmail());
-        assertThat(response.getFirstName()).isEqualTo(request.getFirstName());
-        assertThat(response.getLastName()).isEqualTo(request.getLastName());
-        
-        verify(userRepository).save(any(User.class));
-        verify(auditService).logUserAction(any(UUID.class), eq("USER_REGISTERED"), eq("User"), any(UUID.class));
+        auditLog.info("AUDIT: {}", objectMapper.writeValueAsString(event));
     }
     
-    @Test
-    void authenticateUser_InvalidCredentials_ShouldThrowException() {
-        // Given
-        LoginRequest request = new LoginRequest("test@example.com", "wrongPassword");
-        User user = User.builder()
-            .userId(UUID.randomUUID())
-            .email(request.getEmail())
-            .password("encodedPassword")
+    public void logSecurityEvent(String eventType, String details) {
+        SecurityEvent event = SecurityEvent.builder()
+            .eventType(eventType)
+            .details(details)
+            .timestamp(Instant.now())
+            .ipAddress(getCurrentUserIpAddress())
             .build();
             
-        when(userRepository.findByEmail(request.getEmail())).thenReturn(Optional.of(user));
-        when(passwordEncoder.matches(request.getPassword(), user.getPassword())).thenReturn(false);
-        
-        // When & Then
-        assertThatThrownBy(() -> userService.authenticateUser(request))
-            .isInstanceOf(AuthenticationException.class)
-            .hasMessage("Invalid credentials");
-            
-        verify(auditService).logUserAction(user.getUserId(), "LOGIN_FAILED", "User", user.getUserId());
+        auditLog.warn("SECURITY: {}", objectMapper.writeValueAsString(event));
     }
 }
 ```
 
-### Integration Tests
-```java
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@TestPropertySource(locations = "classpath:application-test.properties")
-@Transactional
-class UserControllerIntegrationTest {
-    
-    @Autowired
-    private TestRestTemplate restTemplate;
-    
-    @Autowired
-    private UserRepository userRepository;
-    
-    @Test
-    void registerUser_ValidRequest_ShouldReturn201() {
-        // Given
-        UserRegistrationRequest request = UserRegistrationRequest.builder()
-            .email("integration@test.com")
-            .password("StrongPass123!")
-            .firstName("Integration")
-            .lastName("Test")
-            .build();
-            
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        HttpEntity<UserRegistrationRequest> entity = new HttpEntity<>(request, headers);
-        
-        // When
-        ResponseEntity<UserResponse> response = restTemplate.postForEntity(
-            "/api/v1/users/register", entity, UserResponse.class);
-        
-        // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(response.getBody()).isNotNull();
-        assertThat(response.getBody().getEmail()).isEqualTo(request.getEmail());
-        
-        // Verify user is saved in database
-        Optional<User> savedUser = userRepository.findByEmail(request.getEmail());
-        assertThat(savedUser).isPresent();
-        assertThat(savedUser.get().getFirstName()).isEqualTo(request.getFirstName());
-    }
-    
-    @Test
-    void registerUser_DuplicateEmail_ShouldReturn409() {
-        // Given
-        User existingUser = User.builder()
-            .userId(UUID.randomUUID())
-            .email("duplicate@test.com")
-            .password("encodedPassword")
-            .firstName("Existing")
-            .lastName("User")
-            .role(UserRole.CONSUMER)
-            .isActive(true)
-            .createdAt(LocalDateTime.now())
-            .updatedAt(LocalDateTime.now())
-            .build();
-        userRepository.save(existingUser);
-        
-        UserRegistrationRequest request = UserRegistrationRequest.builder()
-            .email("duplicate@test.com")
-            .password("StrongPass123!")
-            .firstName("Duplicate")
-            .lastName("Test")
-            .build();
-            
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        HttpEntity<UserRegistrationRequest> entity = new HttpEntity<>(request, headers);
-        
-        // When
-        ResponseEntity<ErrorResponse> response = restTemplate.postForEntity(
-            "/api/v1/users/register", entity, ErrorResponse.class);
-        
-        // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-        assertThat(response.getBody()).isNotNull();
-        assertThat(response.getBody().getMessage()).contains("Email already exists");
-    }
-}
+## 5. Configuration and Deployment
+
+### 5.1 Application Configuration
+```yaml
+# application.yml
+spring:
+  application:
+    name: ecommerce-platform
+  
+  datasource:
+    url: jdbc:postgresql://localhost:5432/ecommerce
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+  
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+    show-sql: false
+  
+  redis:
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD:}
+    timeout: 2000ms
+    lettuce:
+      pool:
+        max-active: 8
+        max-idle: 8
+        min-idle: 0
+  
+  elasticsearch:
+    uris: ${ELASTICSEARCH_URIS:http://localhost:9200}
+    username: ${ELASTICSEARCH_USERNAME:}
+    password: ${ELASTICSEARCH_PASSWORD:}
+  
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${JWT_ISSUER_URI}
+          jwk-set-uri: ${JWT_JWK_SET_URI}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+
+logging:
+  level:
+    com.ecommerce: INFO
+    org.springframework.security: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: logs/application.log
+    max-size: 10MB
+    max-history: 30
+
+app:
+  jwt:
+    secret: ${JWT_SECRET}
+    access-token-expiration: 900000  # 15 minutes
+    refresh-token-expiration: 604800000  # 7 days
+  
+  payment:
+    stripe:
+      api-key: ${STRIPE_API_KEY}
+      webhook-secret: ${STRIPE_WEBHOOK_SECRET}
+    paypal:
+      client-id: ${PAYPAL_CLIENT_ID}
+      client-secret: ${PAYPAL_CLIENT_SECRET}
+  
+  notification:
+    email:
+      provider: sendgrid
+      api-key: ${SENDGRID_API_KEY}
+    sms:
+      provider: twilio
+      account-sid: ${TWILIO_ACCOUNT_SID}
+      auth-token: ${TWILIO_AUTH_TOKEN}
 ```
 
-### Performance Tests
-```java
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-class PerformanceTest {
-    
-    @Autowired
-    private TestRestTemplate restTemplate;
-    
-    @Test
-    void productSearch_ConcurrentRequests_ShouldMaintainPerformance() throws InterruptedException {
-        int numberOfThreads = 50;
-        int requestsPerThread = 20;
-        CountDownLatch latch = new CountDownLatch(numberOfThreads);
-        List<Long> responseTimes = Collections.synchronizedList(new ArrayList<>());
-        
-        ExecutorService executor = Executors.newFixedThreadPool(numberOfThreads);
-        
-        for (int i = 0; i < numberOfThreads; i++) {
-            executor.submit(() -> {
-                try {
-                    for (int j = 0; j < requestsPerThread; j++) {
-                        long startTime = System.currentTimeMillis();
-                        
-                        ResponseEntity<String> response = restTemplate.getForEntity(
-                            "/api/v1/products?page=0&size=20&search=laptop", String.class);
-                        
-                        long endTime = System.currentTimeMillis();
-                        responseTimes.add(endTime - startTime);
-                        
-                        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-                    }
-                } finally {
-                    latch.countDown();
-                }
-            });
-        }
-        
-        latch.await(30, TimeUnit.SECONDS);
-        executor.shutdown();
-        
-        // Assert performance metrics
-        double averageResponseTime = responseTimes.stream()
-            .mapToLong(Long::longValue)
-            .average()
-            .orElse(0.0);
-            
-        long maxResponseTime = responseTimes.stream()
-            .mapToLong(Long::longValue)
-            .max()
-            .orElse(0L);
-            
-        assertThat(averageResponseTime).isLessThan(500); // Average response time < 500ms
-        assertThat(maxResponseTime).isLessThan(2000);    // Max response time < 2s
-        assertThat(responseTimes.size()).isEqualTo(numberOfThreads * requestsPerThread);
-    }
-}
+### 5.2 Docker Configuration
+```dockerfile
+# Dockerfile
+FROM openjdk:17-jre-slim
+
+ARG JAR_FILE=target/*.jar
+COPY ${JAR_FILE} app.jar
+
+EXPOSE 8080
+
+ENTRYPOINT ["java", "-jar", "/app.jar"]
 ```
 
-This comprehensive Low-Level Design document provides detailed implementation specifications, including component structures, data flows, sequence diagrams, database schemas, API specifications, security implementations, error handling strategies, and testing approaches for the online shopping platform based on the HLD requirements.
+### 5.3 Kubernetes Deployment
+```yaml
+# deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ecommerce-platform
+  labels:
+    app: ecommerce-platform
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ecommerce-platform
+  template:
+    metadata:
+      labels:
+        app: ecommerce-platform
+    spec:
+      containers:
+      - name: ecommerce-platform
+        image: ecommerce-platform:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: password
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ecommerce-platform-service
+spec:
+  selector:
+    app: ecommerce-platform
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+  type: LoadBalancer
+```
+
+This comprehensive Low-Level Design document provides detailed implementation specifications for all components of the e-commerce platform, including complete code examples, database schemas, API specifications, security implementations, and deployment configurations.
