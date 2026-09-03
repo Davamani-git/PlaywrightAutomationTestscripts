@@ -1,266 +1,351 @@
-# Credit Card Analysis Dashboard - High-Level Design
+# Credit Card Analysis Dashboard - High-Level Design Document
 
 ## Domain Model
 
-```mermaid
-classDiagram
-    class User {
-        +String userId
-        +String username
-        +String email
-        +String hashedPassword
-        +DateTime createdAt
-        +DateTime lastLoginAt
-        +Boolean isActive
-        +String role
-        +validateCredentials()
-        +updateProfile()
-        +getCards()
-    }
+```
+Credit Card Analysis Dashboard - Domain Model (UML Class Diagram)
 
-    class CreditCard {
-        +String cardId
-        +String cardNumber
-        +String cardHolderName
-        +String bankName
-        +String cardType
-        +Decimal creditLimit
-        +Decimal availableCredit
-        +Decimal outstandingAmount
-        +DateTime expiryDate
-        +Boolean isActive
-        +String encryptedCardData
-        +calculateAvailableCredit()
-        +updateBalance()
-    }
+┌─────────────────────────────────────┐
+│              User                   │
+├─────────────────────────────────────┤
+│ + userId: String (PK)               │
+│ + username: String                  │
+│ + email: String                     │
+│ + passwordHash: String              │
+│ + role: Role                        │
+│ + createdAt: DateTime               │
+│ + lastLoginAt: DateTime             │
+│ + isActive: Boolean                 │
+├─────────────────────────────────────┤
+│ + authenticate()                    │
+│ + updateProfile()                   │
+│ + getCards()                        │
+└─────────────────────────────────────┘
+                 │
+                 │ 1:N
+                 ▼
+┌─────────────────────────────────────┐
+│            CreditCard               │
+├─────────────────────────────────────┤
+│ + cardId: String (PK)               │
+│ + userId: String (FK)               │
+│ + cardNumber: String (Encrypted)    │
+│ + cardHolderName: String            │
+│ + bankName: String                  │
+│ + cardType: CardType                │
+│ + creditLimit: Decimal              │
+│ + availableCredit: Decimal          │
+│ + outstandingAmount: Decimal        │
+│ + expiryDate: Date                  │
+│ + isActive: Boolean                 │
+│ + createdAt: DateTime               │
+├─────────────────────────────────────┤
+│ + calculateAvailableCredit()        │
+│ + getMonthlySpend()                 │
+│ + getTransactions()                 │
+└─────────────────────────────────────┘
+                 │
+                 │ 1:N
+                 ▼
+┌─────────────────────────────────────┐
+│           Transaction               │
+├─────────────────────────────────────┤
+│ + transactionId: String (PK)        │
+│ + cardId: String (FK)               │
+│ + amount: Decimal                   │
+│ + description: String               │
+│ + category: SpendingCategory        │
+│ + transactionDate: DateTime         │
+│ + merchantName: String              │
+│ + transactionType: TransactionType  │
+│ + status: TransactionStatus         │
+│ + createdAt: DateTime               │
+├─────────────────────────────────────┤
+│ + categorizeTransaction()           │
+│ + validateAmount()                  │
+└─────────────────────────────────────┘
+                 │
+                 │ N:1
+                 ▼
+┌─────────────────────────────────────┐
+│        SpendingCategory             │
+├─────────────────────────────────────┤
+│ + categoryId: String (PK)           │
+│ + categoryName: String              │
+│ + description: String               │
+│ + isActive: Boolean                 │
+├─────────────────────────────────────┤
+│ + getSpendingAnalytics()            │
+└─────────────────────────────────────┘
 
-    class Transaction {
-        +String transactionId
-        +String cardId
-        +Decimal amount
-        +String description
-        +String category
-        +String merchantName
-        +DateTime transactionDate
-        +String transactionType
-        +String status
-        +String encryptedData
-        +categorizeTransaction()
-        +validateAmount()
-    }
+┌─────────────────────────────────────┐
+│         DashboardKPI                │
+├─────────────────────────────────────┤
+│ + kpiId: String (PK)                │
+│ + userId: String (FK)               │
+│ + monthlySpend: Decimal             │
+│ + totalCreditLimit: Decimal         │
+│ + totalAvailableCredit: Decimal     │
+│ + totalOutstandingAmount: Decimal   │
+│ + calculationDate: DateTime         │
+├─────────────────────────────────────┤
+│ + calculateKPIs()                   │
+│ + refreshMetrics()                  │
+└─────────────────────────────────────┘
 
-    class Category {
-        +String categoryId
-        +String categoryName
-        +String description
-        +String iconUrl
-        +Boolean isActive
-        +getTransactions()
-    }
-
-    class Dashboard {
-        +String dashboardId
-        +String userId
-        +DateTime lastUpdated
-        +generateKPIs()
-        +getMonthlySpend()
-        +getCategoryAnalysis()
-        +getCardAnalysis()
-    }
-
-    class AuditLog {
-        +String logId
-        +String userId
-        +String action
-        +String entityType
-        +String entityId
-        +DateTime timestamp
-        +String ipAddress
-        +String userAgent
-        +logActivity()
-    }
-
-    class SecurityToken {
-        +String tokenId
-        +String userId
-        +String tokenHash
-        +DateTime expiresAt
-        +String tokenType
-        +Boolean isRevoked
-        +validateToken()
-        +revokeToken()
-    }
-
-    User ||--o{ CreditCard : owns
-    User ||--o{ Dashboard : has
-    CreditCard ||--o{ Transaction : contains
-    Transaction }o--|| Category : belongs_to
-    User ||--o{ AuditLog : generates
-    User ||--o{ SecurityToken : has
+Enumerations:
+- Role: ADMIN, USER, VIEWER
+- CardType: VISA, MASTERCARD, AMEX, DISCOVER
+- SpendingCategory: FOOD_DINING, FUEL, SHOPPING, TRAVEL, ENTERTAINMENT, UTILITIES, HEALTHCARE, EDUCATION, MISCELLANEOUS
+- TransactionType: DEBIT, CREDIT, REFUND
+- TransactionStatus: PENDING, COMPLETED, FAILED, CANCELLED
 ```
 
-## Architecture Overview
+## High-Level Design Document
 
-```mermaid
-graph TB
-    subgraph "Presentation Layer"
-        UI[Web Dashboard UI]
-        API_GW[API Gateway]
-    end
-    
-    subgraph "Application Layer"
-        AUTH[Authentication Service]
-        DASH[Dashboard Service]
-        CARD[Card Management Service]
-        TRANS[Transaction Service]
-        ANALYTICS[Analytics Service]
-    end
-    
-    subgraph "Data Layer"
-        DB[(Encrypted Database)]
-        CACHE[(Redis Cache)]
-        AUDIT[(Audit Store)]
-    end
-    
-    subgraph "Security Layer"
-        WAF[Web Application Firewall]
-        ENCRYPT[Encryption Service]
-        RBAC[RBAC Engine]
-        VAULT[Secrets Vault]
-    end
-    
-    UI --> API_GW
-    API_GW --> WAF
-    WAF --> AUTH
-    AUTH --> RBAC
-    AUTH --> DASH
-    DASH --> CARD
-    DASH --> TRANS
-    DASH --> ANALYTICS
-    CARD --> DB
-    TRANS --> DB
-    ANALYTICS --> DB
-    DASH --> CACHE
-    AUTH --> AUDIT
-    ENCRYPT --> VAULT
-    DB --> ENCRYPT
+### 1. Architecture Overview
+
+```
+Credit Card Analysis Dashboard - High-Level Architecture
+
+┌─────────────────────────────────────────────────────────────┐
+│                    Presentation Layer                        │
+├─────────────────────────────────────────────────────────────┤
+│  React.js Dashboard │ Mobile App │ Progressive Web App      │
+│  - Responsive UI    │ (Optional) │ - Offline Capability     │
+│  - Real-time Charts │            │ - Push Notifications     │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                    ┌─────────┴─────────┐
+                    │   API Gateway     │
+                    │ - Rate Limiting   │
+                    │ - Authentication  │
+                    │ - Request Routing │
+                    └─────────┬─────────┘
+                              │
+┌─────────────────────────────────────────────────────────────┐
+│                   Application Layer                          │
+├─────────────────────────────────────────────────────────────┤
+│ ┌─────────────┐ ┌─────────────┐ ┌─────────────────────────┐ │
+│ │   User      │ │   Card      │ │     Analytics           │ │
+│ │ Management  │ │ Management  │ │     Service             │ │
+│ │ Service     │ │ Service     │ │ - Spending Analysis     │ │
+│ │             │ │             │ │ - KPI Calculation       │ │
+│ └─────────────┘ └─────────────┘ └─────────────────────────┘ │
+│ ┌─────────────┐ ┌─────────────┐ ┌─────────────────────────┐ │
+│ │Transaction  │ │   Security  │ │     Notification        │ │
+│ │ Service     │ │   Service   │ │     Service             │ │
+│ │             │ │ - Encryption│ │ - Alerts & Reports      │ │
+│ │             │ │ - Audit Log │ │                         │ │
+│ └─────────────┘ └─────────────┘ └─────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+                              │
+┌─────────────────────────────────────────────────────────────┐
+│                     Data Layer                              │
+├─────────────────────────────────────────────────────────────┤
+│ ┌─────────────┐ ┌─────────────┐ ┌─────────────────────────┐ │
+│ │  PostgreSQL │ │    Redis    │ │     File Storage        │ │
+│ │ - Primary   │ │ - Caching   │ │ - Document Storage      │ │
+│ │   Database  │ │ - Sessions  │ │ - Audit Logs            │ │
+│ │ - Encrypted │ │             │ │                         │ │
+│ └─────────────┘ └─────────────┘ └─────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Component Descriptions
+### 2. Major Components
 
-### Presentation Layer
-- **Web Dashboard UI**: Responsive React/Angular frontend with Material-UI components
-- **API Gateway**: Kong/AWS API Gateway with rate limiting, request/response transformation
+#### 2.1 User Management Service
+- **Purpose**: Handle user authentication, authorization, and profile management
+- **Key Features**:
+  - JWT-based authentication with refresh tokens
+  - Role-based access control (RBAC)
+  - Multi-factor authentication (MFA)
+  - Password policy enforcement
+  - Account lockout mechanisms
 
-### Application Services
-- **Authentication Service**: JWT-based authentication with MFA support
-- **Dashboard Service**: Aggregates data from multiple services for KPI generation
-- **Card Management Service**: Handles credit card CRUD operations with PCI-DSS compliance
-- **Transaction Service**: Processes and categorizes transactions with fraud detection
-- **Analytics Service**: Generates spending insights and trend analysis
+#### 2.2 Card Management Service
+- **Purpose**: Manage credit card information and calculations
+- **Key Features**:
+  - Encrypted card data storage
+  - Credit limit tracking
+  - Available credit calculation
+  - Card status management
+  - PCI-DSS compliant data handling
 
-### Data Layer
-- **Encrypted Database**: PostgreSQL with TDE (Transparent Data Encryption)
-- **Redis Cache**: Session management and frequently accessed data caching
-- **Audit Store**: Immutable audit trail storage (MongoDB/ElasticSearch)
+#### 2.3 Transaction Service
+- **Purpose**: Process and categorize financial transactions
+- **Key Features**:
+  - Transaction ingestion and validation
+  - Automatic categorization using ML algorithms
+  - Duplicate detection and prevention
+  - Transaction history management
+  - Real-time balance updates
 
-## Integration Points
+#### 2.4 Analytics Service
+- **Purpose**: Generate insights and KPIs from financial data
+- **Key Features**:
+  - Monthly spending analysis
+  - Category-wise spending patterns
+  - Trend analysis and forecasting
+  - Custom reporting capabilities
+  - Real-time dashboard metrics
 
-### External Integrations
-- Identity Provider (OAuth 2.0/SAML)
-- Monitoring & Alerting (Prometheus/Grafana)
-- Log Aggregation (ELK Stack)
+#### 2.5 Security Service
+- **Purpose**: Ensure data protection and compliance
+- **Key Features**:
+  - AES-256 encryption for sensitive data
+  - TLS 1.3 for data in transit
+  - Comprehensive audit logging
+  - Intrusion detection and prevention
+  - Data loss prevention (DLP)
 
-### Internal APIs
-- RESTful APIs with OpenAPI 3.0 specification
-- GraphQL for complex data queries
-- Event-driven architecture with message queues
+### 3. Integration Points
 
-## Security & Compliance Features
+#### 3.1 External Integrations
+- **Bank APIs**: Secure connection to financial institutions (future scope)
+- **Payment Processors**: Integration with major payment networks
+- **Credit Bureaus**: Credit score and limit verification
+- **Fraud Detection**: Third-party fraud prevention services
 
-### Data Protection
-- AES-256 encryption at rest
-- TLS 1.3 for data in transit
-- Field-level encryption for PII/PCI data
-- Data masking for non-production environments
+#### 3.2 Internal Integrations
+- **Identity Provider**: SSO integration with corporate identity systems
+- **Monitoring Systems**: Application performance monitoring (APM)
+- **Backup Systems**: Automated data backup and recovery
+- **Compliance Tools**: Automated compliance reporting and monitoring
 
-### Access Control
-- Role-Based Access Control (RBAC)
-- Attribute-Based Access Control (ABAC)
-- Multi-Factor Authentication (MFA)
-- Session management with secure tokens
+### 4. Security and Compliance Features
 
-### Compliance
-- PCI-DSS Level 1 compliance for card data
-- SOC2 Type II controls implementation
-- GDPR compliance with data subject rights
-- Data retention policies (7 years for financial data)
+#### 4.1 Data Protection
+- **Encryption at Rest**: AES-256 encryption for all sensitive data
+- **Encryption in Transit**: TLS 1.3 for all API communications
+- **Key Management**: Hardware Security Module (HSM) for key storage
+- **Data Masking**: PII masking in non-production environments
 
-### Security Monitoring
-- Real-time threat detection
-- Anomaly detection for transactions
-- Security event correlation
-- Automated incident response
+#### 4.2 Access Control
+- **Authentication**: Multi-factor authentication (MFA)
+- **Authorization**: Role-based access control (RBAC) and Attribute-based access control (ABAC)
+- **Session Management**: Secure session handling with timeout controls
+- **API Security**: OAuth 2.0 with PKCE for API access
 
-## Data Flow
+#### 4.3 Compliance Framework
+- **PCI-DSS**: Level 1 compliance for credit card data handling
+- **SOC 2 Type II**: Controls for security, availability, and confidentiality
+- **ISO 27001**: Information security management system
+- **GDPR/CCPA**: Data privacy and consent management
 
-### User Authentication Flow
-1. User credentials → API Gateway → WAF
-2. Authentication Service validates → RBAC check
-3. JWT token generation → Secure session establishment
+#### 4.4 Audit and Monitoring
+- **Comprehensive Logging**: All user actions and system events
+- **Real-time Monitoring**: Security incident detection and response
+- **Compliance Reporting**: Automated generation of compliance reports
+- **Data Lineage**: Complete tracking of data flow and transformations
 
-### Dashboard Data Flow
-1. Dashboard request → Authentication validation
-2. Parallel service calls (Cards, Transactions, Analytics)
-3. Data aggregation → Cache update
-4. Encrypted response → UI rendering
+### 5. Data Flow Architecture
 
-### Transaction Processing Flow
-1. Transaction data ingestion → Validation
-2. Category classification → Fraud detection
-3. Database persistence → Audit logging
-4. Real-time dashboard updates
+```
+Data Flow Diagram - Credit Card Analysis Dashboard
 
-## Error Handling & Resilience
+┌─────────────┐    ┌─────────────┐    ┌─────────────────┐
+│   User      │───▶│ API Gateway │───▶│   Application   │
+│ Interface   │    │             │    │    Services     │
+└─────────────┘    └─────────────┘    └─────────────────┘
+                           │                     │
+                           ▼                     ▼
+                   ┌─────────────┐    ┌─────────────────┐
+                   │  Security   │    │   Business      │
+                   │  Validation │    │   Logic         │
+                   └─────────────┘    └─────────────────┘
+                           │                     │
+                           ▼                     ▼
+                   ┌─────────────┐    ┌─────────────────┐
+                   │   Audit     │    │   Database      │
+                   │   Logging   │    │   Operations    │
+                   └─────────────┘    └─────────────────┘
+```
 
-### Patterns Implemented
-- Circuit Breaker pattern for service calls
-- Retry mechanism with exponential backoff
-- Bulkhead pattern for resource isolation
-- Graceful degradation for non-critical features
+### 6. Error Handling and Resilience
 
-### Monitoring
-- Health checks for all services
-- Performance metrics collection
-- Error rate monitoring
-- Alerting thresholds configuration
+#### 6.1 Circuit Breaker Pattern
+- **Implementation**: Hystrix or Resilience4j for service-to-service calls
+- **Thresholds**: Configurable failure thresholds and timeout settings
+- **Fallback**: Graceful degradation with cached data or default responses
+
+#### 6.2 Retry Mechanisms
+- **Exponential Backoff**: Progressive retry delays for transient failures
+- **Jitter**: Random delay addition to prevent thundering herd
+- **Dead Letter Queue**: Failed message handling and reprocessing
+
+#### 6.3 Monitoring and Alerting
+- **Health Checks**: Comprehensive application and infrastructure monitoring
+- **Metrics Collection**: Custom business metrics and system performance
+- **Alerting**: Real-time notifications for critical issues and SLA breaches
 
 ## Validation Report
 
 ### Requirements Coverage Checklist
-✅ Dashboard KPIs (Monthly Spend, Credit Limit, Available Credit, Outstanding Amount)
-✅ Multiple Credit Cards management
-✅ Monthly Spend Trends visualization
-✅ Card-wise Spend Analysis
-✅ Category-wise Spending (9 categories defined)
-✅ Responsive design implementation
-✅ User authentication and authorization
-✅ Data encryption and security
 
-### Compliance Checklist
-✅ PCI-DSS compliance for card data handling
-✅ SOC2 controls implementation
-✅ Data retention policies defined
-✅ Audit logging implemented
-✅ Consent management framework
-✅ Data lineage tracking
-✅ Compliance reporting capabilities
+✅ **Core Features Implemented**
+- Dashboard KPIs (Monthly Spend, Total Credit Limit, Available Credit, Outstanding Amount)
+- Multiple Credit Cards management
+- Monthly Spend Trends analysis
+- Card-wise Spend Analysis
+- Category-wise Spending (Food & Dining, Fuel, Shopping, Travel, Entertainment, Utilities, Healthcare, Education, Miscellaneous)
 
-### Error Handling Checklist
-✅ Circuit breaker pattern implementation
-✅ Retry mechanisms with backoff
-✅ Comprehensive logging strategy
-✅ Graceful degradation scenarios
-✅ Input validation at all layers
-✅ Output sanitization and filtering
-✅ Exception handling and recovery
+✅ **Technical Requirements**
+- Responsive design architecture
+- Scalable microservices architecture
+- Real-time data processing capabilities
+- Interactive visualizations support
+
+✅ **Security Requirements**
+- Input validation and sanitization
+- Output filtering and encoding
+- AES-256 encryption for data at rest
+- TLS 1.3 for data in transit
+- Role-based access control (RBAC)
+- Comprehensive audit logging
+- Secrets management with HSM
+
+✅ **Compliance Requirements**
+- PCI-DSS Level 1 compliance framework
+- SOC 2 Type II controls
+- ISO 27001 alignment
+- GDPR/CCPA data privacy controls
+- Data retention policies
+- Consent management system
+- Data lineage tracking
+- Automated compliance reporting
+
+✅ **Error Handling and Resilience**
+- Circuit breaker pattern implementation
+- Exponential backoff retry mechanisms
+- Comprehensive logging and monitoring
+- Graceful degradation strategies
+- Dead letter queue for failed operations
+
+### Compliance Verification
+
+✅ **Data Protection**
+- All PII and sensitive financial data encrypted
+- Secure key management implemented
+- Data masking in non-production environments
+- Regular security assessments scheduled
+
+✅ **Access Control**
+- Multi-factor authentication enforced
+- Role-based permissions implemented
+- Session management with timeout controls
+- API security with OAuth 2.0
+
+✅ **Audit and Monitoring**
+- Complete audit trail for all operations
+- Real-time security monitoring
+- Automated compliance reporting
+- Data lineage documentation
+
+### Error Handling Verification
+
+✅ **Resilience Patterns**
+- Circuit breaker for external service calls
+- Retry mechanisms with exponential backoff
+- Fallback strategies for service degradation
+- Health checks and monitoring alerts
